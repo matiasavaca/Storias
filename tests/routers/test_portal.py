@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from postgrest.exceptions import APIError
 
 from app.deps import require_employee
 from app.main import app
@@ -183,6 +184,19 @@ def test_reorder_updates_only_requested_stories(monkeypatch, client):
     assert ("rpc:reorder_stories", {"p_orders": [{"story_id": "s1", "new_order": 2}, {"story_id": "s2", "new_order": 1}]}) in db.inserts
 
 
+def test_reorder_translates_stale_group_rpc_error_into_conflict(monkeypatch, client):
+    stories = [{"id": "s1", "story_group_id": "g1", "client_id": "c1"}, {"id": "s2", "story_group_id": "g1", "client_id": "c1"}]
+    db = DB([stories, {"id": "c1", "agency_id": "agency-1"}])
+
+    def raise_stale(name, payload):
+        raise APIError({"message": "stale group", "code": "P0001", "details": None, "hint": None})
+
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr(db, "rpc", raise_stale)
+    response = client.patch("/portal/historias/reordenar", json={"historias": [{"story_id": "s1", "nuevo_order": 2}, {"story_id": "s2", "nuevo_order": 1}]})
+    assert response.status_code == 409
+
+
 def test_reorder_rejects_stories_from_different_groups(monkeypatch, client):
     stories = [{"id": "s1", "story_group_id": "g1", "client_id": "c1"}, {"id": "s2", "story_group_id": "g2", "client_id": "c1"}]
     db = DB([stories])
@@ -193,11 +207,31 @@ def test_reorder_rejects_stories_from_different_groups(monkeypatch, client):
 
 
 def test_cancel_story_is_soft_delete_after_agency_check(monkeypatch, client):
-    db = DB([{"id": "s1", "client_id": "c1"}, {"id": "c1", "agency_id": "agency-1"}, [{"id": "s1"}]])
+    db = DB([{"id": "s1", "client_id": "c1", "estado": "pendiente"}, {"id": "c1", "agency_id": "agency-1"}, [{"id": "s1"}]])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
     response = client.delete("/portal/historias/s1")
     assert response.status_code == 200
     assert db.updates == [("stories", {"estado": "cancelada"}, [("id", "s1")])]
+
+
+@pytest.mark.parametrize("estado", ["publicando", "publicado", "cancelada"])
+def test_edit_story_already_published_or_cancelled_is_rejected(monkeypatch, client, estado):
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_original_url": "https://original", "estado": estado}
+    db = DB([story, {"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda *a, **k: pytest.fail("must not re-render a locked story"))
+    response = client.patch("/portal/historias/s1", json={"texto_nuevo": "updated"})
+    assert response.status_code == 409
+    assert db.updates == []
+
+
+@pytest.mark.parametrize("estado", ["publicando", "publicado", "cancelada"])
+def test_cancel_story_already_published_or_cancelled_is_rejected(monkeypatch, client, estado):
+    db = DB([{"id": "s1", "client_id": "c1", "estado": estado}, {"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.delete("/portal/historias/s1")
+    assert response.status_code == 409
+    assert db.updates == []
 
 
 def test_edit_story_from_other_agency_is_forbidden_before_download(monkeypatch, client):

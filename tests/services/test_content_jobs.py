@@ -55,21 +55,23 @@ class Database:
 
 
 def client(id="good", **overrides):
-    return dict(id=id, agency_id="agency", name="Studio", active=True,
+    base = dict(id=id, agency_id="agency", name="Studio", active=True,
                 business_description="Helpful studio", tone_examples=[["a", "b", "c", "d"]],
                 topics=["design"], weekly_focus="Launch", weekly_focus_expires_at="2026-09-20",
-                drive_folder_id=id, logo_url="logo", calendly_link="booking", prob_link=1,
-                **overrides)
+                drive_folder_id=id, logo_url="logo", calendly_link="booking", prob_link=1)
+    base.update(overrides)
+    return base
 
 
 def images(n=5): return [(f"file-{i}", f"image-{i}.jpg", b"image") for i in range(n)]
 
 
-def generated():
+def generated(cta_agregado=True):
     return HiloGenerado(historias=[f"Story {i}" for i in range(4)],
         imagenes_originales_url=[f"raw-{i}" for i in range(4)],
         imagenes_editadas_url=[f"edited-{i}" for i in range(4)],
-        drive_file_ids_usados=[f"file-{i}" for i in range(4)])
+        drive_file_ids_usados=[f"file-{i}" for i in range(4)],
+        cta_agregado=cta_agregado)
 
 
 @pytest.fixture
@@ -79,6 +81,20 @@ def generation(monkeypatch):
     monkeypatch.setattr(jobs.drive, "list_images", drive)
     monkeypatch.setattr(jobs.content, "generar_hilo", engine)
     return drive, engine
+
+
+def test_build_content_config_defaults_null_business_description_and_tone_examples():
+    row = client(business_description=None, tone_examples=None, prob_link=None)
+    config = jobs.build_content_config(row)
+    assert config.business_description == "" and config.tone_examples == [] and config.prob_link == 0.0
+
+
+def test_weekly_does_not_crash_for_client_with_no_business_description_yet(generation):
+    _, engine = generation
+    db = Database([client("onboarding", business_description=None, tone_examples=None), client()])
+    jobs.generate_weekly(db, date(2026, 9, 18))
+    assert "generation_error" not in db.rows["clients"][0]
+    assert {p["p_client_id"] for p in db.saved} == {"onboarding", "good"}
 
 
 def test_weekly_continues_after_insufficient_images_and_saves_complete_thread(generation):
@@ -158,7 +174,7 @@ def test_select_images_uses_expired_before_recent_and_marks_recycling():
     assert recycled is True
 
 
-def test_weekly_recycling_is_recorded_as_pool_warning(generation):
+def test_weekly_recycling_logs_a_warning_without_touching_generation_error(generation, caplog):
     now = datetime.now(timezone.utc)
     _, engine = generation
     db = Database([client()])
@@ -170,8 +186,14 @@ def test_weekly_recycling_is_recorded_as_pool_warning(generation):
         imagenes_editadas_url=[f"edited-{i}" for i in range(4)],
         drive_file_ids_usados=["file-3", "file-4", "file-0", "file-1"],
     )
-    jobs.generate_weekly(db, date(2026, 9, 18))
-    assert db.rows["clients"][0]["generation_error"].startswith("pool_bajo")
+    with caplog.at_level("WARNING"):
+        jobs.generate_weekly(db, date(2026, 9, 18))
+    # Recycling is a benign, informational event: it must not be written into
+    # generation_error, which is documented (AGENTS.md) as "the last generation
+    # error" and gets cleared on every successful, persisted generation.
+    assert len(db.saved) == 1
+    assert "generation_error" not in db.rows["clients"][0]
+    assert any("pool_bajo" in record.message for record in caplog.records)
 
 
 def story(id="story", **updates):

@@ -316,9 +316,11 @@ def generar_hilo(config: ClientContentConfig, imagenes: list[ImagenCandidata]) -
 
     urls_originales = []
     urls_editadas = []
+    cta_agregado = False
     for i, (texto, imagen) in enumerate(zip(historias, imagenes), 1):
-        # CTA solo en la historia 4 y si el cliente lo habilita por probabilidad.
-        agregar_cta = (i == 4) and config.prob_link > 0
+        # CTA solo en la historia 4, con probabilidad prob_link (no un gate binario).
+        agregar_cta = (i == 4) and random.random() < config.prob_link
+        cta_agregado = cta_agregado or agregar_cta
 
         # Se sube la imagen SIN texto por separado de la editada, para poder
         # re-editar despues sin perder calidad (truco de la migracion).
@@ -345,6 +347,7 @@ def generar_hilo(config: ClientContentConfig, imagenes: list[ImagenCandidata]) -
         imagenes_originales_url=urls_originales,
         imagenes_editadas_url=urls_editadas,
         drive_file_ids_usados=[imagen.drive_file_id for imagen in imagenes],
+        cta_agregado=cta_agregado,
     )
 
 
@@ -359,7 +362,7 @@ def editar_historia(
     editada). Devuelve la URL nueva de Cloudinary.
     """
     logo_bytes = _descargar_logo(config)
-    agregar_cta = (num_historia == 4) and config.prob_link > 0
+    agregar_cta = (num_historia == 4) and random.random() < config.prob_link
 
     try:
         editada = componer_historia(

@@ -1,10 +1,24 @@
 """Read-only image downloads from client folders in Google Shared Drives."""
 from __future__ import annotations
 
+import io
+import logging
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from PIL import Image
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def _is_readable_image(data: bytes) -> bool:
+    try:
+        Image.open(io.BytesIO(data)).load()
+        return True
+    except Exception:
+        return False
 
 
 def _drive_client():
@@ -38,18 +52,29 @@ def _image_files(drive_folder_id: str):
 
 
 def list_images(drive_folder_id: str) -> list[tuple[str, str, bytes]]:
-    """Return every image directly inside the folder, in stable name/ID order."""
+    """Return every readable image directly inside the folder, in stable name/ID order.
+
+    Files that fail to decode (corrupt, unsupported format like HEIC, etc.)
+    are skipped with a warning instead of aborting the whole client's batch.
+    """
     files, metadata = _image_files(drive_folder_id)
-    return [(item["id"], item["name"], files.get_media(
-        fileId=item["id"], supportsAllDrives=True,
-    ).execute()) for item in metadata]
+    images = []
+    for item in metadata:
+        data = files.get_media(fileId=item["id"], supportsAllDrives=True).execute()
+        if not _is_readable_image(data):
+            logger.warning("Skipping unreadable Drive image %s (%s)", item["id"], item["name"])
+            continue
+        images.append((item["id"], item["name"], data))
+    return images
 
 
 def first_image(drive_folder_id: str) -> tuple[str, str, bytes] | None:
-    """Return the first stable image while downloading bytes for only that file."""
+    """Return the first readable image, downloading bytes only until one decodes."""
     files, metadata = _image_files(drive_folder_id)
-    if not metadata:
-        return None
-    item = metadata[0]
-    image_bytes = files.get_media(fileId=item["id"], supportsAllDrives=True).execute()
-    return item["id"], item["name"], image_bytes
+    for item in metadata:
+        data = files.get_media(fileId=item["id"], supportsAllDrives=True).execute()
+        if not _is_readable_image(data):
+            logger.warning("Skipping unreadable Drive image %s (%s)", item["id"], item["name"])
+            continue
+        return item["id"], item["name"], data
+    return None

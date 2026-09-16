@@ -10,14 +10,18 @@ parametro, ya descargados por content.py) y donde viven las fuentes
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
-# Fuentes que acompanan al motor. Se intentan en orden hasta encontrar una
-# que exista; como ultimo recurso cae en ImageFont.load_default().
+logger = logging.getLogger(__name__)
+
+# Fuentes que acompanan al motor (unicas que se bundlean en assets/). Se
+# intentan en orden hasta encontrar una que exista; como ultimo recurso cae
+# en ImageFont.load_default(), lo cual se loguea porque produce Stories con
+# texto en un bitmap ilegible sin marca.
 _FONT_PATHS = [
-    str(Path(__file__).parent / "assets" / "Montserrat[wght].ttf"),
     str(Path(__file__).parent / "assets" / "Raleway[wght].ttf"),
     str(Path(__file__).parent / "assets" / "JosefinSans[wght].ttf"),
     "C:/Windows/Fonts/calibri.ttf",
@@ -41,6 +45,7 @@ def _load_font(size: int, weight: int = FONT_WEIGHT) -> ImageFont.FreeTypeFont |
             return f
         except Exception:
             continue
+    logger.error("No bundled or system font could be loaded; falling back to PIL's default bitmap font")
     return ImageFont.load_default()
 
 

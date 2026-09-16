@@ -52,6 +52,7 @@ def schedule_publication(self, story_group_id: str) -> None:
     import httpx, datetime
 
     db = get_admin_client()
+    access_token = None
 
     try:
         group = db.table("story_groups").select(
@@ -95,4 +96,10 @@ def schedule_publication(self, story_group_id: str) -> None:
         }).eq("id", story_group_id).execute()
 
     except Exception as exc:
-        self.retry(exc=exc)
+        # httpx embeds the full request URL (including access_token, since it's
+        # sent as a query param) in HTTPStatusError messages. Never let a live
+        # Meta token reach Celery's result backend/logs via a retried exception.
+        message = str(exc)
+        if access_token:
+            message = message.replace(access_token, "[redacted]")
+        self.retry(exc=RuntimeError(message))

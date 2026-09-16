@@ -30,6 +30,7 @@ class HiloGenerado(BaseModel):
     imagenes_originales_url: list[str]  # Cloudinary, SIN texto (para re-editar despues)
     imagenes_editadas_url: list[str]    # Cloudinary, CON texto
     drive_file_ids_usados: list[str]    # el portal marca estos como last_used_at = ahora en client_images
+    cta_agregado: bool = False          # si el motor efectivamente dibujo el CTA (sorteo por prob_link)
 
 
 class ResultadoPublicacion(BaseModel):

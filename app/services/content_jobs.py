@@ -21,6 +21,18 @@ def local_today() -> date:
     return datetime.now(ZoneInfo(TIMEZONE)).date()
 
 
+def build_content_config(row: dict) -> ClientContentConfig:
+    """Build the engine's config from a raw `clients` row, defaulting the
+    fields the DB allows to be NULL but the engine requires to be set."""
+    return ClientContentConfig(
+        client_id=row["id"], nombre_negocio=row["name"],
+        business_description=row.get("business_description") or "",
+        weekly_focus=row.get("weekly_focus"), tone_examples=row.get("tone_examples") or [],
+        topics=row.get("topics"), logo_url=row.get("logo_url"),
+        calendly_link=row.get("calendly_link"), prob_link=row.get("prob_link") or 0.0,
+    )
+
+
 def _all_rows(query):
     """Collect the snapshot before updates alter a pending query's offsets."""
     rows, offset = [], 0
@@ -51,7 +63,10 @@ def _thread_payload(row: dict, config: ClientContentConfig, result: HiloGenerado
         "p_used_focus_expires_at": row.get("weekly_focus_expires_at"),
         "p_stories": [{"text": result.historias[i], "image_url": result.imagenes_editadas_url[i],
             "image_original_url": result.imagenes_originales_url[i],
-            "agregar_cta": i == 3 and config.prob_link > 0} for i in range(4)],
+            # Read what the engine actually drew on the image (result.cta_agregado),
+            # don't re-roll the dice here: a second independent draw could disagree
+            # with the composed image and persist a flag that doesn't match it.
+            "agregar_cta": i == 3 and result.cta_agregado} for i in range(4)],
         "p_images": [{"drive_file_id": id, "drive_file_name": names[id]}
                      for id in result.drive_file_ids_usados],
     }
@@ -98,10 +113,7 @@ def generate_weekly(db, today: date | None = None) -> None:
                 "client_id", row["id"]).eq("generation_week", week).execute().data
             if existing:
                 continue
-            config = ClientContentConfig(client_id=row["id"], nombre_negocio=row["name"],
-                **{field: row.get(field) for field in (
-                    "business_description", "tone_examples", "topics", "weekly_focus",
-                    "logo_url", "calendly_link")}, prob_link=row.get("prob_link") or 0.0)
+            config = build_content_config(row)
             available = drive.list_images(row.get("drive_folder_id"))
             if len(available) < 4:
                 raise ValueError(f"sin imágenes suficientes: {len(available)} disponibles; se requieren 4")
@@ -118,12 +130,11 @@ def generate_weekly(db, today: date | None = None) -> None:
             result = content.generar_hilo(config, selected)
             db.rpc("persist_generated_thread", _thread_payload(row, config, result, selected, today)).execute()
             if recycled:
-                warning = "pool_bajo: se reciclaron imágenes dentro del cooldown"
-                logger.warning("Client %s generated with image recycling", row["id"])
-                # TODO(B3): expose this warning in the health dashboard.
-                db.table("clients").update({"generation_error": warning,
-                    "generation_error_at": datetime.now(timezone.utc).isoformat()}).eq(
-                        "id", row["id"]).execute()
+                # This is a benign, informational event, not a failure: don't write
+                # it into generation_error, whose documented contract (AGENTS.md)
+                # is "the last generation error" and gets cleared on every success.
+                # TODO(B3): give this its own column and expose it in the health dashboard.
+                logger.warning("Client %s generated with image recycling (pool_bajo)", row["id"])
         except Exception as exc:
             logger.error("Weekly generation failed for client %s: %s", row["id"], type(exc).__name__)
             try:

@@ -75,7 +75,7 @@ class ClientContentConfig(BaseModel):
     topics: list[str] | None = None
     logo_url: str | None = None
     calendly_link: str | None = None
-    prob_link: float = 0.0
+    prob_link: float = 0.0              # probabilidad (0-1) de agregar el CTA en la historia 4, sorteada por el motor
 
 class ImagenCandidata(BaseModel):
     drive_file_id: str
@@ -87,6 +87,7 @@ class HiloGenerado(BaseModel):
     imagenes_originales_url: list[str]  # Cloudinary, SIN texto (para re-editar después)
     imagenes_editadas_url: list[str]    # Cloudinary, CON texto
     drive_file_ids_usados: list[str]    # el portal marca estos como last_used_at = ahora en client_images
+    cta_agregado: bool = False          # si el motor efectivamente sorteó y dibujó el CTA (el portal NO debe re-sortear esto)
 
 class ResultadoPublicacion(BaseModel):
     ok: bool

@@ -5,15 +5,21 @@ from datetime import date
 
 import requests
 from fastapi import APIRouter, HTTPException
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field, field_validator
 
 from app.db.supabase import get_admin_client
 from app.deps import EmployeeDep
 from app.engine import content
-from app.engine.schemas import ClientContentConfig, ImagenCandidata
+from app.engine.schemas import ImagenCandidata
 from app.services import drive
+from app.services.content_jobs import build_content_config
 
 router = APIRouter(prefix="/portal", tags=["portal"])
+
+# Stories in these states already happened (or are mid-flight) on Instagram:
+# editing or cancelling them would silently diverge the DB from what's live.
+_LOCKED_STATES = {"publicando", "publicado", "cancelada"}
 
 _CLIENT_DETAIL = (
     "id,agency_id,name,business_description,weekly_focus,"
@@ -59,18 +65,8 @@ def _client_or_error(db, client_id: str, agency_id: str) -> dict:
     return result.data
 
 
-def _content_config(row: dict) -> ClientContentConfig:
-    return ClientContentConfig(
-        client_id=row["id"], nombre_negocio=row["name"],
-        business_description=row.get("business_description") or "",
-        weekly_focus=row.get("weekly_focus"), tone_examples=row.get("tone_examples") or [],
-        topics=row.get("topics"), logo_url=row.get("logo_url"),
-        calendly_link=row.get("calendly_link"), prob_link=row.get("prob_link") or 0.0,
-    )
-
-
 @router.get("/clientes")
-async def list_clients(employee: EmployeeDep, solo_mios: bool = False):
+def list_clients(employee: EmployeeDep, solo_mios: bool = False):
     db = get_admin_client()
     query = db.table("clients").select(_CLIENT_DETAIL).eq("agency_id", employee.agency_id)
     if solo_mios:
@@ -85,12 +81,12 @@ async def list_clients(employee: EmployeeDep, solo_mios: bool = False):
 
 
 @router.get("/clientes/{client_id}")
-async def get_client(client_id: str, employee: EmployeeDep):
+def get_client(client_id: str, employee: EmployeeDep):
     return _client_or_error(get_admin_client(), client_id, employee.agency_id)
 
 
 @router.patch("/clientes/{client_id}")
-async def patch_client(client_id: str, body: ClientPatch, employee: EmployeeDep):
+def patch_client(client_id: str, body: ClientPatch, employee: EmployeeDep):
     db = get_admin_client()
     current = _client_or_error(db, client_id, employee.agency_id)
     supplied = body.model_dump(mode="json", exclude_unset=True)
@@ -106,7 +102,7 @@ async def patch_client(client_id: str, body: ClientPatch, employee: EmployeeDep)
 
 
 @router.post("/clientes/{client_id}/probar-prompt")
-async def try_prompt(client_id: str, employee: EmployeeDep):
+def try_prompt(client_id: str, employee: EmployeeDep):
     db = get_admin_client()
     client = _client_or_error(db, client_id, employee.agency_id)
     image = drive.first_image(client.get("drive_folder_id"))
@@ -116,11 +112,11 @@ async def try_prompt(client_id: str, employee: EmployeeDep):
     candidate = ImagenCandidata(
         drive_file_id=image_id, drive_file_name=image_name, image_bytes=image_bytes,
     )
-    return {"historias": content.generar_texto_de_prueba(_content_config(client), candidate)}
+    return {"historias": content.generar_texto_de_prueba(build_content_config(client), candidate)}
 
 
 @router.get("/clientes/{client_id}/historias")
-async def list_stories(client_id: str, employee: EmployeeDep):
+def list_stories(client_id: str, employee: EmployeeDep):
     db = get_admin_client()
     _client_or_error(db, client_id, employee.agency_id)
     groups = db.table("story_groups").select("*,stories(*)").eq("client_id", client_id).gte(
@@ -135,7 +131,7 @@ async def list_stories(client_id: str, employee: EmployeeDep):
 
 
 @router.patch("/historias/reordenar")
-async def reorder_stories(body: ReorderRequest, employee: EmployeeDep):
+def reorder_stories(body: ReorderRequest, employee: EmployeeDep):
     ids = [item.story_id for item in body.historias]
     if len(ids) != len(set(ids)):
         raise HTTPException(status_code=422, detail="Cada historia debe aparecer una sola vez")
@@ -148,28 +144,38 @@ async def reorder_stories(body: ReorderRequest, employee: EmployeeDep):
     _client_or_error(db, stories[0]["client_id"], employee.agency_id)
     if len({item.nuevo_order for item in body.historias}) != len(body.historias):
         raise HTTPException(status_code=422, detail="Cada posición debe ser única")
-    db.rpc("reorder_stories", {"p_orders": [
-        {"story_id": item.story_id, "new_order": item.nuevo_order}
-        for item in body.historias
-    ]}).execute()
+    try:
+        db.rpc("reorder_stories", {"p_orders": [
+            {"story_id": item.story_id, "new_order": item.nuevo_order}
+            for item in body.historias
+        ]}).execute()
+    except APIError:
+        # Most likely someone else cancelled/moved a story in this group
+        # concurrently, so the client's view of "all active stories" is stale.
+        raise HTTPException(
+            status_code=409,
+            detail="El grupo de historias cambió mientras reordenabas. Recargá y probá de nuevo.",
+        )
     return {"detail": "Orden actualizado"}
 
 
 @router.patch("/historias/{story_id}")
-async def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
+def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
     db = get_admin_client()
     story = db.table("stories").select(
-        "id,client_id,order,text,image_url,image_original_url"
+        "id,client_id,order,text,image_url,image_original_url,estado"
     ).eq("id", story_id).maybe_single().execute().data
     if not story:
         raise HTTPException(status_code=404, detail="Historia no encontrada")
     client = _client_or_error(db, story["client_id"], employee.agency_id)
+    if story.get("estado") in _LOCKED_STATES:
+        raise HTTPException(status_code=409, detail="La historia ya fue publicada o cancelada y no se puede editar")
     if not story.get("image_original_url"):
         raise HTTPException(status_code=422, detail="La historia no tiene imagen original")
     response = requests.get(story["image_original_url"], timeout=30)
     response.raise_for_status()
     image_url = content.editar_historia(
-        _content_config(client), response.content, body.texto_nuevo, story["order"],
+        build_content_config(client), response.content, body.texto_nuevo, story["order"],
     )
     updated = db.table("stories").update({
         "text": body.texto_nuevo, "image_url": image_url,
@@ -180,13 +186,15 @@ async def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
 
 
 @router.delete("/historias/{story_id}")
-async def cancel_story(story_id: str, employee: EmployeeDep):
+def cancel_story(story_id: str, employee: EmployeeDep):
     db = get_admin_client()
-    story = db.table("stories").select("id,client_id").eq(
+    story = db.table("stories").select("id,client_id,estado").eq(
         "id", story_id
     ).maybe_single().execute().data
     if not story:
         raise HTTPException(status_code=404, detail="Historia no encontrada")
     _client_or_error(db, story["client_id"], employee.agency_id)
+    if story.get("estado") in _LOCKED_STATES:
+        raise HTTPException(status_code=409, detail="La historia ya fue publicada o cancelada")
     db.table("stories").update({"estado": "cancelada"}).eq("id", story_id).execute()
     return {"detail": "Historia cancelada"}
