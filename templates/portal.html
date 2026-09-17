@@ -78,7 +78,13 @@
     .panel-body{padding:0 16px 16px}
     .editor-grid{display:flex;align-items:stretch;gap:14px;margin-bottom:0}
     .field{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
-    .field label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}
+    .field-head{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+    .field label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+    .field-head .info{color:var(--muted);cursor:help;font-size:11px}
+    .field-view{min-height:90px;padding:10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);font-size:13px;line-height:1.55;flex:1}
+    .field-view .field-text{color:var(--fg);white-space:pre-wrap}
+    .field-view.empty .field-text{color:var(--muted);font-style:italic}
+    .field-edit{display:flex;flex-direction:column;flex:1}
     .hint{font-size:11px;color:var(--muted);margin-bottom:9px;line-height:1.45}
     .field textarea{flex:1}
     textarea{width:100%;min-height:90px;resize:vertical;padding:10px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--fg);transition:border-color .12s}
@@ -213,17 +219,26 @@
           <div class="panel-head" id="content-panel-toggle"><h2>Dirección de contenido</h2><span class="chev">▾</span></div>
           <div class="panel-body">
             <div class="editor-grid">
-              <div class="field"><label for="business-description">Voz de marca</label>
-                <textarea id="business-description" maxlength="500" placeholder="Tono, propuesta de valor y público..."></textarea>
-                <div class="char-count"><span id="desc-count">0</span>/500</div>
-                <div class="actions"><button id="save-description" class="btn primary">Guardar descripción</button><button id="try-prompt" class="btn">✨ Probar con IA</button></div>
+              <div class="field" id="description-field">
+                <div class="field-head"><label for="business-description">Voz de marca</label></div>
+                <div class="field-view" id="description-view"><p class="field-text" id="description-text"></p></div>
+                <div class="field-edit hidden" id="description-edit">
+                  <textarea id="business-description" maxlength="500" placeholder="Tono, propuesta de valor y público..."></textarea>
+                  <div class="char-count"><span id="desc-count">0</span>/500</div>
+                </div>
+                <div class="actions" id="description-view-actions"><button id="edit-description" class="btn">✎ Editar</button><button id="try-prompt" class="btn">✨ Probar con IA</button></div>
+                <div class="actions hidden" id="description-edit-actions"><button id="save-description" class="btn primary">Guardar</button><button id="cancel-description" class="btn">Cancelar</button></div>
                 <div id="prompt-preview" class="preview hidden"></div>
               </div>
-              <div class="field"><label for="weekly-focus">Enfoque semanal</label>
-                <p class="hint">Pedido puntual para el próximo hilo. Se aplica al cliente durante esta semana, no a una historia individual.</p>
-                <textarea id="weekly-focus" maxlength="300" placeholder="Ej.: destacar la venta cerrada esta semana"></textarea>
-                <div class="char-count"><span id="focus-count">0</span>/300</div>
-                <div class="actions"><button id="save-focus" class="btn primary">Guardar enfoque semanal</button></div>
+              <div class="field" id="focus-field">
+                <div class="field-head"><label for="weekly-focus">Enfoque semanal</label><span class="info" title="Pedido puntual para el próximo hilo. Se aplica al cliente durante esta semana, no a una historia individual.">ⓘ</span></div>
+                <div class="field-view" id="focus-view"><p class="field-text" id="focus-text"></p></div>
+                <div class="field-edit hidden" id="focus-edit">
+                  <textarea id="weekly-focus" maxlength="300" placeholder="Ej.: destacar la venta cerrada esta semana"></textarea>
+                  <div class="char-count"><span id="focus-count">0</span>/300</div>
+                </div>
+                <div class="actions" id="focus-view-actions"><button id="edit-focus" class="btn">✎ Editar</button></div>
+                <div class="actions hidden" id="focus-edit-actions"><button id="save-focus" class="btn primary">Guardar</button><button id="cancel-focus" class="btn">Cancelar</button></div>
               </div>
             </div>
             <div class="team-field"><label for="client-team">Equipo</label><select id="client-team"><option value="">Sin equipo</option></select></div>

@@ -121,10 +121,23 @@
       if (selectionVersion === state.selectionVersion) setControlsDisabled(false);
     }
   }
+  function setFieldMode(name, editing) {
+    $(`${name}-view`).classList.toggle('hidden', editing);
+    $(`${name}-edit`).classList.toggle('hidden', !editing);
+    $(`${name}-view-actions`).classList.toggle('hidden', editing);
+    $(`${name}-edit-actions`).classList.toggle('hidden', !editing);
+  }
+  function updateFieldView(name, value, emptyPlaceholder) {
+    $(`${name}-text`).textContent = value || emptyPlaceholder;
+    $(`${name}-view`).classList.toggle('empty', !value);
+  }
   function renderClient() {
     $('client-name').textContent = state.client.name; $('client-avatar').textContent = initials(state.client.name);
     $('business-description').value = state.client.business_description || ''; $('weekly-focus').value = state.client.weekly_focus || '';
     $('desc-count').textContent = String($('business-description').value.length); $('focus-count').textContent = String($('weekly-focus').value.length);
+    updateFieldView('description', state.client.business_description, 'Todavía no hay descripción. Hacé click en Editar para agregarla.');
+    updateFieldView('focus', state.client.weekly_focus, 'Sin enfoque puntual para esta semana.');
+    setFieldMode('description', false); setFieldMode('focus', false);
     $('client-team').value = state.client.team_id || '';
     $('gen-dot').className = `gen-dot${state.client.generation_error ? ' warn' : ''}`;
     $('header-tags').innerHTML = (state.client.topics || []).slice(0, 4).map((topic) => `<span class="tag">${escapeHtml(topic)}</span>`).join('');
@@ -193,12 +206,17 @@
     return `<article class="story" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span>${dateBadge}<div class="story-actions"><button class="icon-btn" data-action="move-left" ${index===0?'disabled':''} aria-label="Mover a la izquierda">←</button><button class="icon-btn" data-action="move-right" ${index===total-1?'disabled':''} aria-label="Mover a la derecha">→</button><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text)}</p></div></article>`;
   }
   async function saveClientField(field, buttonId) {
+    const name = field === 'weekly_focus' ? 'focus' : 'description';
     const button=$(buttonId), input=$(field==='business_description'?'business-description':'weekly-focus'), value=input.value.trim(), clientId=state.client?.id, selectionVersion=state.selectionVersion;
     if (!clientId) return; button.disabled=true;
     try {
       const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}`, {method:'PATCH', body:JSON.stringify({[field]:value || null})});
       if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
-      state.client = updated; showMessage(field==='weekly_focus'?'Enfoque semanal guardado.':'Descripción guardada.');
+      state.client = updated;
+      updateFieldView(name, field==='weekly_focus'?updated.weekly_focus:updated.business_description,
+        field==='weekly_focus'?'Sin enfoque puntual para esta semana.':'Todavía no hay descripción. Hacé click en Editar para agregarla.');
+      setFieldMode(name, false);
+      showMessage(field==='weekly_focus'?'Enfoque semanal guardado.':'Descripción guardada.');
     } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) button.disabled=false; }
   }
@@ -263,11 +281,15 @@
   $('add-team').addEventListener('click',createTeam);
   $('business-description').addEventListener('input',()=>{$('desc-count').textContent=String($('business-description').value.length);});
   $('weekly-focus').addEventListener('input',()=>{$('focus-count').textContent=String($('weekly-focus').value.length);});
+  $('edit-description').addEventListener('click',()=>{setFieldMode('description',true); $('business-description').focus();});
+  $('cancel-description').addEventListener('click',()=>{$('business-description').value=state.client?.business_description || ''; $('desc-count').textContent=String($('business-description').value.length); setFieldMode('description',false);});
+  $('edit-focus').addEventListener('click',()=>{setFieldMode('focus',true); $('weekly-focus').focus();});
+  $('cancel-focus').addEventListener('click',()=>{$('weekly-focus').value=state.client?.weekly_focus || ''; $('focus-count').textContent=String($('weekly-focus').value.length); setFieldMode('focus',false);});
   $('content-panel-toggle').addEventListener('click',()=>$('content-panel').classList.toggle('collapsed'));
   $('qa-history').addEventListener('click',openHistory);
   $('close-history').addEventListener('click',()=>$('history-dialog').close());
   $('close-history-2').addEventListener('click',()=>$('history-dialog').close());
-  $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
+  $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); setFieldMode('description',true); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
   $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
   $('plan-days').addEventListener('click',(event)=>{const card=event.target.closest('[data-story-id]');if(!card)return;const found=findStory(card.dataset.storyId);if(found)openStory(found.story);});
   $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close());
