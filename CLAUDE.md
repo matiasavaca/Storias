@@ -61,6 +61,16 @@ Extienden el `supabase_schema.sql` que ya armó Matías.
 | `new_value` | text |
 | `changed_at` | timestamptz |
 
+**`teams`** (nueva, A5) — subdivisión de una agencia (varios empleados, varios clientes a su cargo), puramente organizativa para que a los empleados les sea más fácil encontrar sus clientes en el panel. No afecta el contrato del engine ni permisos:
+| Campo | Tipo |
+|---|---|
+| `id` | uuid pk |
+| `agency_id` | uuid fk → agencies |
+| `name` | text, único por agencia |
+| `created_at` | timestamptz |
+
+`employees.team_id` y `clients.team_id` (ambos uuid, nullable, fk → `teams`, `on delete set null`) marcan a qué equipo pertenece cada uno.
+
 ---
 
 ## 3. Modelos de datos del contrato (viven en `app/engine/schemas.py`, Pydantic)

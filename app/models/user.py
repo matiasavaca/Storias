@@ -10,6 +10,7 @@ class Employee(BaseModel):
     name: str
     agency_id: str
     role: Literal["employee", "admin"]
+    team_id: str | None = None
 
 
 class ClientUser(BaseModel):

@@ -67,6 +67,7 @@ async def require_employee(
         name=payload.get("name", ""),
         agency_id=payload["agency_id"],
         role=payload["role"],
+        team_id=payload.get("team_id"),
     )
 
 

@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const state = { clients: [], client: null, groups: [], editingStory: null, selectedClientId: null, selectionVersion: 0, clientListVersion: 0 };
+  const state = { clients: [], client: null, groups: [], editingStory: null, selectedClientId: null, selectionVersion: 0, clientListVersion: 0, teams: [], me: null };
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[char]);
 
@@ -24,6 +24,25 @@
     $('client-view').classList.add('hidden'); $('empty').classList.remove('hidden'); $('empty').textContent = 'Seleccioná un cliente para gestionar su contenido.';
   }
 
+  async function loadMeAndTeams() {
+    try {
+      const [me, teams] = await Promise.all([api('/portal/me'), api('/portal/equipos')]);
+      state.me = me; state.teams = teams;
+      $('client-team').innerHTML = '<option value="">Sin equipo</option>' + teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join('');
+    } catch (error) { /* non-fatal: the sidebar just falls back to a flat, ungrouped list */ }
+  }
+  function teamName(teamId) { const team = state.teams.find((item) => item.id === teamId); return team ? team.name : 'Sin equipo'; }
+  async function createTeam() {
+    const name = window.prompt('Nombre del equipo nuevo:');
+    if (!name || !name.trim()) return;
+    try {
+      const team = await api('/portal/equipos', {method:'POST', body:JSON.stringify({name:name.trim()})});
+      state.teams.push(team); state.teams.sort((a,b)=>a.name.localeCompare(b.name,'es'));
+      $('client-team').innerHTML = '<option value="">Sin equipo</option>' + state.teams.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('');
+      renderClients(); showMessage('Equipo creado.');
+    } catch(error) { showMessage(error.message, true); }
+  }
+
   async function loadClients() {
     clearMessage(); $('client-list').textContent = 'Cargando...';
     const listVersion = ++state.clientListVersion;
@@ -45,7 +64,25 @@
   }
   function renderClients() {
     if (!state.clients.length) { $('client-list').textContent = 'No hay clientes disponibles.'; return; }
-    $('client-list').innerHTML = state.clients.map((client) => `<button class="client-item${state.client?.id === client.id ? ' active' : ''}" data-client-id="${escapeHtml(client.id)}"><span class="avatar">${escapeHtml(initials(client.name))}</span><span>${escapeHtml(client.name)}</span></button>`).join('');
+    const byTeam = new Map();
+    for (const client of state.clients) {
+      const key = client.team_id || '';
+      if (!byTeam.has(key)) byTeam.set(key, []);
+      byTeam.get(key).push(client);
+    }
+    const myTeam = state.me?.team_id || '';
+    const keys = [...byTeam.keys()].sort((a, b) => {
+      if (a === b) return 0;
+      if (myTeam && a === myTeam) return -1;
+      if (myTeam && b === myTeam) return 1;
+      if (a === '') return 1;
+      if (b === '') return -1;
+      return teamName(a).localeCompare(teamName(b), 'es');
+    });
+    $('client-list').innerHTML = keys.map((key) => {
+      const cards = byTeam.get(key).map((client) => `<button class="client-item${state.client?.id === client.id ? ' active' : ''}" data-client-id="${escapeHtml(client.id)}"><span class="avatar">${escapeHtml(initials(client.name))}</span><span>${escapeHtml(client.name)}</span></button>`).join('');
+      return `<div class="team-group"><h4 class="team-label">${escapeHtml(key ? teamName(key) : 'Sin equipo')}</h4>${cards}</div>`;
+    }).join('');
   }
   async function selectClient(clientId) {
     const selectionVersion = ++state.selectionVersion;
@@ -69,6 +106,7 @@
   function renderClient() {
     $('client-name').textContent = state.client.name; $('client-avatar').textContent = initials(state.client.name);
     $('business-description').value = state.client.business_description || ''; $('weekly-focus').value = state.client.weekly_focus || '';
+    $('client-team').value = state.client.team_id || '';
     $('prompt-preview').classList.add('hidden'); renderStories(); renderCalendar();
   }
   function groupDate(group) {
@@ -98,6 +136,16 @@
       state.client = updated; showMessage(field==='weekly_focus'?'Enfoque semanal guardado.':'Descripción guardada.');
     } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) button.disabled=false; }
+  }
+  async function saveClientTeam() {
+    const select=$('client-team'), clientId=state.client?.id, selectionVersion=state.selectionVersion, teamId=select.value || null;
+    if (!clientId) return; select.disabled=true;
+    try {
+      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/equipo`, {method:'PATCH', body:JSON.stringify({team_id:teamId})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.client.team_id = updated.team_id; renderClients(); showMessage('Equipo actualizado.');
+    } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) { showMessage(error.message,true); select.value = state.client?.team_id || ''; } }
+    finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) select.disabled=false; }
   }
   async function tryPrompt() {
     const button=$('try-prompt'), preview=$('prompt-preview'), clientId=state.client?.id, selectionVersion=state.selectionVersion;
@@ -134,7 +182,7 @@
     catch(error) { if (selectionVersion===state.selectionVersion&&!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
   }
   $('client-list').addEventListener('click',(event)=>{const item=event.target.closest('[data-client-id]');if(item)selectClient(item.dataset.clientId);});
-  $('only-mine').addEventListener('change',loadClients); $('save-description').addEventListener('click',()=>saveClientField('business_description','save-description')); $('save-focus').addEventListener('click',()=>saveClientField('weekly_focus','save-focus')); $('try-prompt').addEventListener('click',tryPrompt);
+  $('only-mine').addEventListener('change',loadClients); $('save-description').addEventListener('click',()=>saveClientField('business_description','save-description')); $('save-focus').addEventListener('click',()=>saveClientField('weekly_focus','save-focus')); $('try-prompt').addEventListener('click',tryPrompt); $('client-team').addEventListener('change',saveClientTeam); $('add-team').addEventListener('click',createTeam);
   $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
-  $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close()); loadClients();
+  $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close()); loadMeAndTeams().finally(loadClients);
 })();

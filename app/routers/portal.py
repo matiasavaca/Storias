@@ -24,7 +24,7 @@ _LOCKED_STATES = {"publicando", "publicado", "cancelada"}
 _CLIENT_DETAIL = (
     "id,agency_id,name,business_description,weekly_focus,"
     "weekly_focus_expires_at,tone_examples,topics,drive_folder_id,logo_url,"
-    "calendly_link,prob_link,generation_error,generation_error_at"
+    "calendly_link,prob_link,generation_error,generation_error_at,team_id"
 )
 
 
@@ -43,6 +43,14 @@ class ClientPatch(BaseModel):
         return value
 
 
+class ClientTeamPatch(BaseModel):
+    team_id: str | None = None
+
+
+class TeamCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
 class StoryPatch(BaseModel):
     texto_nuevo: str = Field(min_length=1)
 
@@ -58,11 +66,40 @@ class ReorderRequest(BaseModel):
 
 def _client_or_error(db, client_id: str, agency_id: str) -> dict:
     result = db.table("clients").select(_CLIENT_DETAIL).eq("id", client_id).maybe_single().execute()
-    if not result.data:
+    # postgrest-py's maybe_single() returns None outright (not a response with
+    # data=None) when zero rows match — never assume `result` itself is set.
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     if result.data["agency_id"] != agency_id:
         raise HTTPException(status_code=403, detail="Cliente fuera de la agencia")
     return result.data
+
+
+@router.get("/me")
+def get_me(employee: EmployeeDep):
+    return {"id": employee.id, "name": employee.name, "email": employee.email,
+            "role": employee.role, "agency_id": employee.agency_id, "team_id": employee.team_id}
+
+
+@router.get("/equipos")
+def list_teams(employee: EmployeeDep):
+    db = get_admin_client()
+    return db.table("teams").select("id,name").eq(
+        "agency_id", employee.agency_id
+    ).order("name").execute().data or []
+
+
+@router.post("/equipos")
+def create_team(body: TeamCreate, employee: EmployeeDep):
+    db = get_admin_client()
+    name = body.name.strip()
+    try:
+        created = db.table("teams").insert(
+            {"agency_id": employee.agency_id, "name": name}
+        ).execute().data
+    except APIError:
+        raise HTTPException(status_code=409, detail="Ya existe un equipo con ese nombre")
+    return created[0] if isinstance(created, list) and created else {"name": name}
 
 
 @router.get("/clientes")
@@ -99,6 +136,24 @@ def patch_client(client_id: str, body: ClientPatch, employee: EmployeeDep):
         "p_agency_id": employee.agency_id, "p_patch": changes,
     }).execute().data
     return updated or {**current, **changes}
+
+
+@router.patch("/clientes/{client_id}/equipo")
+def patch_client_team(client_id: str, body: ClientTeamPatch, employee: EmployeeDep):
+    """Reassign which team manages this client — purely organizational, so it
+    goes through a plain update instead of the audited update_client_prompt RPC."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    if body.team_id is not None:
+        team = db.table("teams").select("id").eq("id", body.team_id).eq(
+            "agency_id", employee.agency_id
+        ).maybe_single().execute()
+        if not team or not team.data:
+            raise HTTPException(status_code=422, detail="Equipo no encontrado en tu agencia")
+    updated = db.table("clients").update({"team_id": body.team_id}).eq(
+        "id", client_id
+    ).execute().data
+    return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "team_id": body.team_id}
 
 
 @router.post("/clientes/{client_id}/probar-prompt")
@@ -162,9 +217,12 @@ def reorder_stories(body: ReorderRequest, employee: EmployeeDep):
 @router.patch("/historias/{story_id}")
 def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
     db = get_admin_client()
-    story = db.table("stories").select(
+    result = db.table("stories").select(
         "id,client_id,order,text,image_url,image_original_url,estado"
-    ).eq("id", story_id).maybe_single().execute().data
+    ).eq("id", story_id).maybe_single().execute()
+    # postgrest-py's maybe_single() returns None outright (not a response with
+    # data=None) when zero rows match — never chain `.data` directly onto it.
+    story = result.data if result else None
     if not story:
         raise HTTPException(status_code=404, detail="Historia no encontrada")
     client = _client_or_error(db, story["client_id"], employee.agency_id)
@@ -188,9 +246,10 @@ def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
 @router.delete("/historias/{story_id}")
 def cancel_story(story_id: str, employee: EmployeeDep):
     db = get_admin_client()
-    story = db.table("stories").select("id,client_id,estado").eq(
+    result = db.table("stories").select("id,client_id,estado").eq(
         "id", story_id
-    ).maybe_single().execute().data
+    ).maybe_single().execute()
+    story = result.data if result else None
     if not story:
         raise HTTPException(status_code=404, detail="Historia no encontrada")
     _client_or_error(db, story["client_id"], employee.agency_id)

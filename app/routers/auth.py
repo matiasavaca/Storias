@@ -93,7 +93,9 @@ async def google_callback(request: Request, code: str, state: str):
     db = get_admin_client()
     result = db.table("employees").select("*").eq("email", email).maybe_single().execute()
 
-    if not result.data:
+    # postgrest-py's maybe_single() returns None outright (not a response with
+    # data=None) when zero rows match — never assume `result` itself is set.
+    if not result or not result.data:
         raise HTTPException(
             status_code=403,
             detail="Este email no tiene acceso a Storias. Contactá a tu agencia.",
@@ -106,6 +108,7 @@ async def google_callback(request: Request, code: str, state: str):
         "name": name,
         "agency_id": employee["agency_id"],
         "role": employee["role"],
+        "team_id": employee.get("team_id"),
     })
 
     response = RedirectResponse(url="/portal", status_code=302)
@@ -125,7 +128,7 @@ async def send_magic_link(email: str):
 
     # Verificar que el email pertenece a un cliente registrado
     result = db.table("clients").select("id,agency_id").eq("contact_email", email).maybe_single().execute()
-    if not result.data:
+    if not result or not result.data:
         # Respuesta genérica — no revelar si el email existe o no
         return {"detail": "Si tu email está registrado, recibirás el link en breve."}
 
@@ -147,7 +150,7 @@ async def magic_callback(token_hash: str, type: str):
 
     user = session.user
     client = db.table("clients").select("id,agency_id").eq("contact_email", user.email).maybe_single().execute()
-    if not client.data:
+    if not client or not client.data:
         raise HTTPException(status_code=403, detail="Cliente no encontrado")
 
     our_token = _make_jwt({

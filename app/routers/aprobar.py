@@ -198,7 +198,7 @@ def _get_valid_token(db, token: str) -> dict:
     """Valida que el token exista, no haya expirado y no haya sido usado."""
     result = db.table("approval_tokens").select("*").eq("token", token).maybe_single().execute()
 
-    if not result.data:
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="Link no encontrado")
 
     t = result.data

@@ -22,6 +22,7 @@ class Query:
         self.db, self.table = db, table
         self.filters = []
         self.payload = None
+        self.is_maybe_single = False
 
     def select(self, *args, **kwargs): return self
     def eq(self, key, value): self.filters.append((key, value)); return self
@@ -29,10 +30,16 @@ class Query:
     def gte(self, key, value): self.filters.append((key, value)); return self
     def neq(self, key, value): self.filters.append((key, value)); return self
     def order(self, *args, **kwargs): return self
-    def maybe_single(self): return self
+    def maybe_single(self): self.is_maybe_single = True; return self
     def update(self, payload): self.payload = payload; self.db.updates.append((self.table, payload, self.filters)); return self
     def insert(self, payload): self.payload = payload; self.db.inserts.append((self.table, payload)); return self
-    def execute(self): return Result(self.db.responses.pop(0))
+    def execute(self):
+        value = self.db.responses.pop(0)
+        # Real postgrest-py's maybe_single() returns None outright (not a
+        # response with data=None) on zero rows — let tests simulate that.
+        if self.is_maybe_single and value is None:
+            return None
+        return Result(value)
 
 
 class DB:
@@ -60,6 +67,69 @@ def client(employee):
     app.dependency_overrides.clear()
 
 
+def test_me_reports_current_employee_including_team(monkeypatch, client):
+    response = client.get("/portal/me")
+    assert response.status_code == 200
+    assert response.json() == {"id": "emp-1", "name": "PM", "email": "pm@example.com",
+                                "role": "employee", "agency_id": "agency-1", "team_id": None}
+
+
+def test_list_teams_scopes_to_employee_agency(monkeypatch, client):
+    db = DB([[{"id": "t1", "name": "Equipo A"}, {"id": "t2", "name": "Equipo B"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.get("/portal/equipos")
+    assert response.status_code == 200
+    assert response.json() == [{"id": "t1", "name": "Equipo A"}, {"id": "t2", "name": "Equipo B"}]
+
+
+def test_create_team_inserts_scoped_to_agency(monkeypatch, client):
+    db = DB([[{"id": "t1", "agency_id": "agency-1", "name": "Equipo Nuevo"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.post("/portal/equipos", json={"name": "Equipo Nuevo"})
+    assert response.status_code == 200
+    assert response.json()["name"] == "Equipo Nuevo"
+    assert db.inserts == [("teams", {"agency_id": "agency-1", "name": "Equipo Nuevo"})]
+
+
+def test_create_team_rejects_duplicate_name(monkeypatch, client):
+    class ConflictingDB:
+        def table(self, name):
+            class Q:
+                def insert(self, payload):
+                    def execute():
+                        raise APIError({"message": "duplicate", "code": "23505", "details": None, "hint": None})
+                    return SimpleNamespace(execute=execute)
+            return Q()
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: ConflictingDB())
+    response = client.post("/portal/equipos", json={"name": "Equipo Repetido"})
+    assert response.status_code == 409
+
+
+def test_patch_client_team_validates_team_belongs_to_agency(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, {"id": "t1"}, [{"id": "c1", "team_id": "t1"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/equipo", json={"team_id": "t1"})
+    assert response.status_code == 200
+    assert response.json()["team_id"] == "t1"
+    assert db.updates == [("clients", {"team_id": "t1"}, [("id", "c1")])]
+
+
+def test_patch_client_team_rejects_team_from_another_agency(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/equipo", json={"team_id": "foreign-team"})
+    assert response.status_code == 422
+    assert db.updates == []
+
+
+def test_patch_client_team_can_unassign(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "c1", "team_id": None}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/equipo", json={"team_id": None})
+    assert response.status_code == 200
+    assert db.updates == [("clients", {"team_id": None}, [("id", "c1")])]
+
+
 def test_list_clients_defaults_to_entire_agency(monkeypatch, client):
     db = DB([[{"id": "c1", "agency_id": "agency-1"}, {"id": "c2", "agency_id": "agency-1"}]])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
@@ -74,6 +144,22 @@ def test_list_clients_can_filter_to_employee_assignments(monkeypatch, client):
     response = client.get("/portal/clientes?solo_mios=true")
     assert response.status_code == 200
     assert response.json() == [{"id": "c2", "agency_id": "agency-1"}]
+
+
+def test_missing_client_is_404_not_a_crash_when_postgrest_returns_none(monkeypatch, client):
+    # Regression: real postgrest-py's maybe_single() returns None outright
+    # (not a response object) on zero rows, unlike the naive mocks elsewhere.
+    db = DB([None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.get("/portal/clientes/missing")
+    assert response.status_code == 404
+
+
+def test_edit_missing_story_is_404_not_a_crash_when_postgrest_returns_none(monkeypatch, client):
+    db = DB([None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/historias/missing", json={"texto_nuevo": "updated"})
+    assert response.status_code == 404
 
 
 def test_client_from_other_agency_is_forbidden(monkeypatch, client):
