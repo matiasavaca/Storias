@@ -149,56 +149,89 @@
   function dayLabel(isoDate) {
     return isoDate ? new Intl.DateTimeFormat('es-AR', {weekday:'short', day:'numeric', timeZone:'UTC'}).format(new Date(`${isoDate}T00:00:00Z`)) : '';
   }
+  function activeGroup() {
+    // The nearest upcoming group by date (state.groups is date-sorted by the
+    // backend) — used only for the week-badge/activity summary.
+    return state.groups[0];
+  }
+  function activeDates() {
+    // Every date covered by the nearest group, plus any date the employee has
+    // clicked on the calendar this session — these render as editable rows in
+    // "Historias generadas". Everything else is just "scheduled" and shows as
+    // a compact preview in "Plan de la próxima semana" instead.
+    const dates = new Set();
+    const group = state.groups[0];
+    if (group) {
+      for (const story of (group.stories || [])) if (story.fecha_publicacion) dates.add(story.fecha_publicacion);
+      if (!dates.size && group.scheduled_date) dates.add(group.scheduled_date);
+    }
+    for (const iso of draftDates) dates.add(iso);
+    return dates;
+  }
   function renderPlan() {
-    // state.groups[0] is the current/active batch (shown in "Historias generadas");
-    // this panel previews the one after it, if it's already been generated.
-    // The panel itself (and "Editar ritmo") stays visible either way — ritmo is
-    // a forward-looking setting, not something tied to content that already exists.
     $('plan-panel').classList.remove('hidden');
-    const upcoming = state.groups[1];
-    const stories = upcoming ? [...(upcoming.stories || [])] : [];
-    const dated = stories.filter((story) => story.fecha_publicacion)
-      .sort((a,b) => a.fecha_publicacion.localeCompare(b.fecha_publicacion));
-    $('plan-preview').classList.add('hidden');
-    if (!dated.length) {
+    const active = activeDates();
+    const items = [];
+    for (const group of state.groups) {
+      for (const story of (group.stories || [])) if (story.fecha_publicacion && !active.has(story.fecha_publicacion)) items.push(story);
+    }
+    items.sort((a,b) => a.fecha_publicacion.localeCompare(b.fecha_publicacion) || String(a.hora_publicacion||'').localeCompare(String(b.hora_publicacion||'')));
+    if (!items.length) {
       $('plan-range').textContent = '';
-      $('plan-days').innerHTML = '<div class="empty">Todavía no se generó el próximo hilo. Se genera automáticamente los viernes a las 18:00hs.</div>';
+      $('plan-days').innerHTML = '<div class="empty">No hay más publicaciones programadas todavía.</div>';
       return;
     }
-    const first = dated[0].fecha_publicacion, last = dated[dated.length - 1].fecha_publicacion;
+    const first = items[0].fecha_publicacion, last = items[items.length - 1].fecha_publicacion;
     $('plan-range').textContent = first === last ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;
-    $('plan-days').innerHTML = dated.map((story) => {
-      const title = story.text.length > 60 ? story.text.slice(0, 57) + '…' : story.text;
-      return `<div class="plan-day" data-story-id="${escapeHtml(story.id)}"><span class="grip">⠿</span><span class="thumb">📝</span><div><div class="date">${escapeHtml(dayLabel(story.fecha_publicacion))}</div><div class="time">${upcoming.scheduled_time ? upcoming.scheduled_time.slice(0,5) + 'hs' : ''}</div><div class="title">${escapeHtml(title)}</div><div class="type">Story única</div></div></div>`;
+    $('plan-days').innerHTML = items.map((story) => {
+      const title = story.text || 'Sin texto todavía';
+      const shortTitle = title.length > 40 ? title.slice(0, 37) + '…' : title;
+      const hora = story.hora_publicacion ? String(story.hora_publicacion).slice(0,5) : '';
+      return `<div class="plan-chip" data-story-id="${escapeHtml(story.id)}"><span class="grip">⠿</span><span class="thumb">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="">` : '🖼'}</span><div class="plan-chip-body"><div class="date">${escapeHtml(dayLabel(story.fecha_publicacion))}${hora ? ' · ' + hora : ''}</div><div class="title">${escapeHtml(shortTitle)}</div><div class="type">Story única</div></div><div class="plan-chip-actions"><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div></div>`;
     }).join('');
-  }
-  function showPlanPreview(story) {
-    $('plan-preview').innerHTML = `${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Vista previa">` : ''}<div class="plan-preview-body"><p>${escapeHtml(story.text)}</p><button class="btn" data-edit-story-id="${escapeHtml(story.id)}">✎ Editar esta historia</button></div>`;
-    $('plan-preview').classList.remove('hidden');
-    $('plan-preview').scrollIntoView({behavior:'smooth', block:'nearest'});
   }
   function groupDate(group) {
     const raw = group.scheduled_date || group.generation_week;
     return raw ? new Intl.DateTimeFormat('es-AR', {dateStyle:'long', timeZone:'UTC'}).format(new Date(`${raw}T00:00:00Z`)) : 'Sin fecha';
   }
-  function groupRangeLabel(group) {
-    const dates = (group.stories || []).map((s) => s.fecha_publicacion).filter(Boolean).sort();
-    if (!dates.length) return groupDate(group);
-    const first = dayLabel(dates[0]), last = dayLabel(dates[dates.length - 1]);
-    return first === last ? first : `${first} – ${last}`;
-  }
   function renderStories() {
-    // Only the current/active batch — the next one (if already generated) has
-    // its own condensed preview in "Plan de la próxima semana" instead.
-    const group = state.groups[0];
-    if (!group) { $('stories').innerHTML = '<div class="empty">No hay historias próximas para este cliente.</div>'; $('week-badge').classList.add('hidden'); return; }
-    if (group.scheduled_date) { $('week-badge').textContent = `${groupRangeLabel(group)}${group.scheduled_time ? ' · ' + group.scheduled_time.slice(0,5) + 'hs' : ''}`; $('week-badge').classList.remove('hidden'); }
-    else $('week-badge').classList.add('hidden');
-    const stories = [...(group.stories || [])].sort((a,b) => a.order - b.order);
-    $('stories').innerHTML = `<section class="group" data-group-id="${escapeHtml(group.id)}"><div class="stories">${stories.map((story,index) => storyCard(story,index,stories.length)).join('')}</div></section>`;
+    // One row per date: every date is its own horizontal strip of cards ending
+    // in a "+" tile, so any day can hold as many images as needed — never just one.
+    const active = activeDates();
+    const byDate = new Map();
+    const manualDates = new Set(); // dates with a manual (non-AI) group — their time is editable inline
+    for (const group of state.groups) {
+      for (const story of (group.stories || [])) {
+        if (!story.fecha_publicacion || !active.has(story.fecha_publicacion)) continue;
+        if (!byDate.has(story.fecha_publicacion)) byDate.set(story.fecha_publicacion, []);
+        byDate.get(story.fecha_publicacion).push(story);
+        if (!group.generation_week) manualDates.add(story.fecha_publicacion);
+      }
+    }
+    for (const iso of active) if (!byDate.has(iso)) byDate.set(iso, []);
+    const dates = [...byDate.keys()].sort();
+    if (!dates.length) {
+      $('stories').innerHTML = '<div class="empty">No hay historias próximas para este cliente. Clickeá un día del calendario para agregar una.</div>';
+      $('week-badge').classList.add('hidden');
+      return;
+    }
+    const first = dates[0], last = dates[dates.length - 1];
+    $('week-badge').textContent = first === last ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;
+    $('week-badge').classList.remove('hidden');
+    const rows = dates.map((iso) => {
+      const stories = byDate.get(iso).sort((a,b) => a.order - b.order);
+      const cards = stories.map((story,index) => storyCard(story,index,stories.length)).join('');
+      const allApproved = stories.length > 0 && stories.every((s) => s.aprobado);
+      const statusBadge = allApproved ? '<span class="badge">Agendado</span>' : '';
+      const timeEditable = !stories.length || manualDates.has(iso);
+      const timeValue = stories.length && stories[0].hora_publicacion ? String(stories[0].hora_publicacion).slice(0,5) : '09:00';
+      const timeInput = `<input type="time" class="day-time" data-time-for="${escapeHtml(iso)}" value="${escapeHtml(timeValue)}" ${timeEditable ? '' : 'disabled title="Este día usa el horario de Editar ritmo"'}>`;
+      return `<div class="day-row" data-date="${escapeHtml(iso)}"><div class="day-row-head"><span class="section-title">${escapeHtml(dayLabel(iso))}</span>${statusBadge}${timeInput}</div><div class="day-row-cards">${cards}<div class="story add-placeholder" data-add-date="${escapeHtml(iso)}"><span class="add-icon">+</span></div></div></div>`;
+    }).join('');
+    $('stories').innerHTML = `<section class="group">${rows}</section>`;
   }
   function renderActivity() {
-    const next = state.groups[0];
+    const next = activeGroup();
     const activeCount = next ? (next.stories || []).length : 0;
     const rows = [];
     if (next) {
@@ -215,9 +248,12 @@
       ? `<div class="status-card warn"><span>⚠️</span><div><strong>Necesita atención</strong><p>${escapeHtml(state.client.generation_error)}</p></div></div>`
       : `<div class="status-card ok"><span>✓</span><div><strong>Todo en orden</strong><p>No hay errores de generación pendientes.</p></div></div>`;
   }
-  function storyCard(story, index, total) {
+  function storyCard(story, index, total, showMove = true) {
     const dateBadge = story.fecha_publicacion ? `<span class="story-date">${escapeHtml(dayLabel(story.fecha_publicacion))}</span>` : '';
-    return `<article class="story" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span>${dateBadge}<div class="story-actions"><button class="icon-btn" data-action="move-left" ${index===0?'disabled':''} aria-label="Mover a la izquierda">←</button><button class="icon-btn" data-action="move-right" ${index===total-1?'disabled':''} aria-label="Mover a la derecha">→</button><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text)}</p></div></article>`;
+    const moveButtons = showMove ? `<button class="icon-btn" data-action="move-left" ${index===0?'disabled':''} aria-label="Mover a la izquierda">←</button><button class="icon-btn" data-action="move-right" ${index===total-1?'disabled':''} aria-label="Mover a la derecha">→</button>` : '';
+    const approvedClass = story.aprobado ? ' approved' : '';
+    const approvedBadge = story.aprobado ? '<span class="approved-badge" title="Aprobada">✓</span>' : '';
+    return `<article class="story${approvedClass}" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span>${dateBadge}${approvedBadge}<div class="story-actions">${moveButtons}<button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text || 'Sin texto todavía')}</p></div></article>`;
   }
   async function saveClientField(field, buttonId) {
     const name = field === 'weekly_focus' ? 'focus' : 'description';
@@ -255,9 +291,13 @@
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) button.disabled=false; }
   }
   const CAL_LABELS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
-  let calendarDays = []; // [{day, time}], up to 4 — weekdays that repeat every week
+  let ritmoDays = []; // [{day, time}], up to 4 — the AI's recurring weekly cadence
   let calMonthOffset = 0;
+  let pendingUploadDate = null; // set right before triggering the hidden file input
+  let pendingUploadHora = '09:00'; // read from that day's inline time input at the same moment
+  let draftDates = new Set(); // ISO dates clicked on the calendar, waiting for an image — shown as empty "+" cards in "Historias generadas"
   function monthBase() { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + calMonthOffset); return d; }
+  function isoDate(year, month, day) { return `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
   function renderCalendarMonth() {
     const base = monthBase(), year = base.getFullYear(), month = base.getMonth();
     const monthLabel = base.toLocaleDateString('es-AR', {month:'long', year:'numeric'});
@@ -266,42 +306,87 @@
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const cells = Array(firstWeekday).fill(null).concat(Array.from({length: daysInMonth}, (_, i) => i + 1));
     while (cells.length % 7 !== 0) cells.push(null);
-    const activeDays = new Set(calendarDays.map((e) => e.day));
     const contentDates = new Set();
     for (const group of state.groups) for (const story of (group.stories || [])) if (story.fecha_publicacion) contentDates.add(story.fecha_publicacion);
     $('calendar-grid').innerHTML = cells.map((day) => {
       if (day === null) return '<div class="cal-cell outside"></div>';
-      const weekday = (new Date(year, month, day).getDay() + 6) % 7;
-      const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-      const active = activeDays.has(weekday), hasContent = contentDates.has(iso);
-      return `<div class="cal-cell${active?' active-day':''}" data-weekday="${weekday}">${day}${hasContent?'<span class="dot"></span>':''}</div>`;
+      const iso = isoDate(year, month, day);
+      const pending = draftDates.has(iso) && !contentDates.has(iso);
+      return `<div class="cal-cell${pending?' pending':''}" data-date="${iso}">${day}${contentDates.has(iso)?'<span class="dot"></span>':''}</div>`;
     }).join('');
-    renderCalendarLegend();
   }
-  function renderCalendarLegend() {
-    const sorted = [...calendarDays].sort((a,b) => a.day - b.day);
-    $('calendar-legend').innerHTML = sorted.length ? sorted.map((entry) =>
-      `<div class="legend-row"><span>${CAL_LABELS[entry.day]}</span><input type="time" data-day="${entry.day}" value="${entry.time}"></div>`
-    ).join('') : '<p class="hint">Clickeá hasta 4 días en el calendario de arriba.</p>';
-    $('save-calendar').classList.remove('hidden');
+  function renderRitmoChips() {
+    const activeDays = new Set(ritmoDays.map((e) => e.day));
+    $('ritmo-chips').innerHTML = CAL_LABELS.map((label, day) =>
+      `<span class="ritmo-chip${activeDays.has(day)?' active':''}" data-day="${day}">${label}</span>`
+    ).join('');
   }
   async function loadCalendar() {
     calMonthOffset = 0;
+    draftDates = new Set();
+    renderCalendarMonth();
     let days = state.client?.publish_days;
     if (!days) { try { days = (await api('/portal/ritmo-default')).publish_days; } catch(_) { days = [{day:0,time:'09:00'},{day:2,time:'09:00'},{day:4,time:'09:00'},{day:6,time:'09:00'}]; } }
-    calendarDays = days.map((d) => ({day: d.day, time: d.time}));
-    renderCalendarMonth();
+    ritmoDays = days.map((d) => ({day: d.day, time: d.time}));
+    renderRitmoChips();
   }
-  async function saveCalendar() {
+  async function toggleRitmoDay(day) {
     const clientId = state.client?.id, selectionVersion = state.selectionVersion;
-    if (!clientId || calendarDays.length !== 4) { showMessage('Elegí exactamente 4 días.', true); return; }
-    $('save-calendar').disabled = true;
+    if (!clientId) return;
+    const idx = ritmoDays.findIndex((e) => e.day === day);
+    const next = [...ritmoDays];
+    if (idx >= 0) next.splice(idx, 1);
+    else { if (next.length >= 4) { showMessage('Ya elegiste 4 días — sacá uno para agregar otro.', true); return; } next.push({day, time:'09:00'}); }
     try {
-      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/ritmo`, {method:'PATCH', body:JSON.stringify({publish_days:calendarDays})});
+      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/ritmo`, {method:'PATCH', body:JSON.stringify({publish_days:next})});
       if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
-      state.client.publish_days = updated.publish_days; showMessage('Calendario de publicación actualizado.');
+      state.client.publish_days = updated.publish_days; ritmoDays = updated.publish_days; renderRitmoChips();
+      showMessage('Días automáticos actualizados.');
     } catch(error) { showMessage(error.message, true); }
-    finally { $('save-calendar').disabled = false; }
+  }
+  async function uploadManualImage(iso, hora, file) {
+    const clientId = state.client?.id, selectionVersion = state.selectionVersion;
+    if (!clientId) return;
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)) { showMessage('Hora inválida. Usá el formato HH:MM.', true); return; }
+    const formData = new FormData();
+    formData.append('fecha_publicacion', iso); formData.append('hora_publicacion', hora); formData.append('image', file);
+    try {
+      const response = await fetch(`/portal/clientes/${encodeURIComponent(clientId)}/historias/manual`, {method:'POST', credentials:'same-origin', body: formData});
+      if (response.status === 401) { window.location.assign('/login'); return; }
+      if (!response.ok) { let detail = 'No se pudo subir la imagen.'; try { detail = (await response.json()).detail || detail; } catch(_) {} throw new Error(detail); }
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      const groups = await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`);
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.groups = groups; draftDates.add(iso); // keep the row open so more images can be added
+      renderStories(); renderPlan(); renderCalendarMonth(); renderActivity();
+      showMessage('Imagen agregada.');
+    } catch(error) { showMessage(error.message, true); }
+  }
+  async function toggleApproval(story) {
+    const clientId = state.client?.id, selectionVersion = state.selectionVersion;
+    if (!clientId) return;
+    const next = !story.aprobado;
+    try {
+      const updated = await api(`/portal/historias/${encodeURIComponent(story.id)}/aprobar`, {method:'PATCH', body:JSON.stringify({aprobado: next})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      Object.assign(story, updated);
+      renderStories(); renderPlan();
+    } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message, true); }
+  }
+  async function updateDayTime(iso, hhmm) {
+    const clientId = state.client?.id, selectionVersion = state.selectionVersion;
+    if (!clientId || !/^([01]\d|2[0-3]):[0-5]\d$/.test(hhmm)) return;
+    const hasStories = state.groups.some((group) => (group.stories||[]).some((story) => story.fecha_publicacion === iso));
+    if (!hasStories) return; // empty row: the chosen time is just read from the input at upload time
+    try {
+      await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias/manual/${encodeURIComponent(iso)}/hora`, {method:'PATCH', body:JSON.stringify({hora_publicacion:hhmm})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      const groups = await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`);
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.groups = groups;
+      renderStories(); renderPlan(); renderCalendarMonth(); renderActivity();
+      showMessage('Hora actualizada.');
+    } catch(error) { showMessage(error.message, true); }
   }
   async function openHistory() {
     const clientId = state.client?.id; if (!clientId) return;
@@ -352,26 +437,53 @@
   $('qa-history').addEventListener('click',openHistory);
   $('close-history').addEventListener('click',()=>$('history-dialog').close());
   $('close-history-2').addEventListener('click',()=>$('history-dialog').close());
-  $('save-calendar').addEventListener('click',saveCalendar);
   $('cal-prev').addEventListener('click',()=>{calMonthOffset--; renderCalendarMonth();});
   $('cal-next').addEventListener('click',()=>{calMonthOffset++; renderCalendarMonth();});
   $('calendar-grid').addEventListener('click',(event)=>{
-    const cell = event.target.closest('[data-weekday]'); if (!cell) return;
-    const day = Number(cell.dataset.weekday);
-    const idx = calendarDays.findIndex((e)=>e.day===day);
-    if (idx >= 0) calendarDays.splice(idx, 1);
-    else { if (calendarDays.length >= 4) { showMessage('Ya elegiste 4 días — sacá uno para agregar otro.', true); return; } calendarDays.push({day, time:'09:00'}); }
-    renderCalendarMonth();
+    const cell = event.target.closest('[data-date]'); if (!cell) return;
+    const iso = cell.dataset.date;
+    if (draftDates.has(iso)) draftDates.delete(iso); else draftDates.add(iso);
+    renderStories(); renderPlan(); renderCalendarMonth();
   });
-  $('calendar-legend').addEventListener('change',(event)=>{
-    const day = Number(event.target.dataset.day);
-    const entry = calendarDays.find((e)=>e.day===day);
-    if (entry) entry.time = event.target.value;
+  $('manual-upload-input').addEventListener('change',(event)=>{
+    const file = event.target.files[0], iso = pendingUploadDate, hora = pendingUploadHora;
+    pendingUploadDate = null; event.target.value = '';
+    if (file && iso) uploadManualImage(iso, hora, file);
+  });
+  $('edit-ritmo').addEventListener('click',()=>$('ritmo-dialog').showModal());
+  $('close-ritmo').addEventListener('click',()=>$('ritmo-dialog').close());
+  $('close-ritmo-2').addEventListener('click',()=>$('ritmo-dialog').close());
+  $('ritmo-chips').addEventListener('click',(event)=>{
+    const chip = event.target.closest('[data-day]'); if (!chip) return;
+    toggleRitmoDay(Number(chip.dataset.day));
   });
   $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); setFieldMode('description',true); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
-  $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
-  $('plan-days').addEventListener('click',(event)=>{const card=event.target.closest('[data-story-id]');if(!card)return;const found=findStory(card.dataset.storyId);if(found)showPlanPreview(found.story);});
-  $('plan-preview').addEventListener('click',(event)=>{const btn=event.target.closest('[data-edit-story-id]');if(!btn)return;const found=findStory(btn.dataset.editStoryId);if(found)openStory(found.story);});
+  $('stories').addEventListener('click',(event)=>{
+    const addCard=event.target.closest('[data-add-date]');
+    if (addCard) {
+      pendingUploadDate=addCard.dataset.addDate;
+      const timeInput=document.querySelector(`.day-time[data-time-for="${CSS.escape(pendingUploadDate)}"]`);
+      pendingUploadHora=timeInput ? timeInput.value : '09:00';
+      $('manual-upload-input').click();
+      return;
+    }
+    const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');
+    if (!card) return;
+    const found=findStory(card.dataset.storyId); if(!found) return;
+    if (action) {
+      if(action.dataset.action==='edit')openStory(found.story);
+      if(action.dataset.action==='delete')deleteStory(found.group,found.story);
+      if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);
+      if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);
+      return;
+    }
+    toggleApproval(found.story);
+  });
+  $('stories').addEventListener('change',(event)=>{
+    const timeInput=event.target.closest('[data-time-for]'); if (!timeInput) return;
+    updateDayTime(timeInput.dataset.timeFor, timeInput.value);
+  });
+  $('plan-days').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);});
   $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close());
   loadMeAndTeams().finally(loadClients);
 })();

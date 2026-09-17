@@ -251,7 +251,7 @@ def test_weekly_recycling_logs_a_warning_without_touching_generation_error(gener
 def story(id="story", **updates):
     row = dict(id=id, story_group_id="group", client_id="good", order=1,
                image_url="edited", fecha_publicacion="2026-09-21", estado="pendiente",
-               agregar_cta=True, clients={"instagram_account_id": "ig",
+               agregar_cta=True, aprobado=True, clients={"instagram_account_id": "ig",
                "meta_access_token_encrypted": "encrypted", "calendly_link": "booking"})
     row.update(updates)
     return row
@@ -302,3 +302,11 @@ def test_encryption_failure_never_calls_meta(publication):
     engine.assert_not_called()
     assert db.rows["stories"][0]["estado"] == "error"
     assert "cifrado" in db.rows["stories"][0]["error"]
+
+
+def test_unapproved_manual_story_never_publishes(publication):
+    engine, _ = publication
+    db = Database(stories=[story(aprobado=False)])
+    jobs.publish_daily(db, date(2026, 9, 21))
+    engine.assert_not_called()
+    assert db.rows["stories"][0]["estado"] == "pendiente"

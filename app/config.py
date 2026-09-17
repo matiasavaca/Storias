@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # ── Claude API ─────────────────────────────────────────────────────────────
     anthropic_api_key: str
 
+    # ── Cloudinary ─────────────────────────────────────────────────────────────
+    # The engine (app/engine/content.py) reads these itself via os.getenv, per
+    # its own contract of not depending on this settings module. This copy is
+    # for portal-side code (app/services/uploads.py) that isn't part of the
+    # engine and should go through Settings like everything else here.
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
+
     # ── Meta / Instagram ───────────────────────────────────────────────────────
     # Las credenciales POR CLIENTE se guardan cifradas en Supabase,
     # no en el .env. Acá solo va la app-level config.

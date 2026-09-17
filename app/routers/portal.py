@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,7 +13,7 @@ from app.db.supabase import get_admin_client
 from app.deps import EmployeeDep
 from app.engine import content
 from app.engine.schemas import ImagenCandidata
-from app.services import drive
+from app.services import drive, uploads
 from app.services.content_jobs import PUBLISH_DAY_OFFSETS, build_content_config
 
 router = APIRouter(prefix="/portal", tags=["portal"])
@@ -272,6 +272,118 @@ def list_stories(client_id: str, employee: EmployeeDep):
             if story.get("estado") != "cancelada"
         ]
     return groups
+
+
+def _valid_hhmm(value: str) -> bool:
+    return len(value) == 5 and value[2] == ":" and value[:2].isdigit() and value[3:].isdigit() \
+        and 0 <= int(value[:2]) <= 23 and 0 <= int(value[3:]) <= 59
+
+
+@router.post("/clientes/{client_id}/historias/manual")
+async def create_manual_story(client_id: str, employee: EmployeeDep,
+    fecha_publicacion: str = Form(...), hora_publicacion: str = Form(...),
+    image: UploadFile = File(...)):
+    """Manually schedule one image as a Story on a specific date — independent
+    of the AI weekly generation. Adding a second image to a date that already
+    has one just adds another story alongside it (each still publishes as its
+    own separate Instagram Story; the platform has no multi-image Story)."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    try:
+        parsed_date = date.fromisoformat(fecha_publicacion)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Fecha inválida")
+    if not _valid_hhmm(hora_publicacion):
+        raise HTTPException(status_code=422, detail="Hora inválida (formato HH:MM)")
+
+    data = await image.read()
+    try:
+        url = uploads.upload_image(data, client_id, f"{fecha_publicacion}-{parsed_date.toordinal()}-{hora_publicacion.replace(':','')}")
+    except uploads.UploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    group = db.table("story_groups").select("id").eq("client_id", client_id).eq(
+        "scheduled_date", fecha_publicacion
+    ).is_("generation_week", "null").execute().data
+    if group:
+        group_id = group[0]["id"]
+        existing = db.table("stories").select("order").eq(
+            "story_group_id", group_id
+        ).order("order", desc=True).limit(1).execute().data
+        next_order = (existing[0]["order"] + 1) if existing else 1
+        if next_order > 10:
+            raise HTTPException(status_code=422, detail="Ya hay demasiadas historias en este día")
+    else:
+        created = db.table("story_groups").insert({
+            "client_id": client_id, "agency_id": employee.agency_id,
+            "scheduled_date": fecha_publicacion, "scheduled_time": f"{hora_publicacion}:00",
+            "status": "pending",
+        }).execute().data
+        group_id = created[0]["id"]
+        next_order = 1
+
+    story = db.table("stories").insert({
+        "story_group_id": group_id, "client_id": client_id, "order": next_order,
+        "text": "", "image_url": url, "image_original_url": url,
+        "fecha_publicacion": fecha_publicacion, "hora_publicacion": f"{hora_publicacion}:00",
+        "estado": "pendiente", "agregar_cta": False, "aprobado": False,
+    }).execute().data
+    return story[0]
+
+
+class StoryApproval(BaseModel):
+    aprobado: bool
+
+
+@router.patch("/historias/{story_id}/aprobar")
+def approve_story(story_id: str, body: StoryApproval, employee: EmployeeDep):
+    """Manually-uploaded stories start unapproved (see create_manual_story) and
+    publish_daily() skips anything not approved — this is a real gate on
+    publishing, not just a visual checkmark."""
+    db = get_admin_client()
+    result = db.table("stories").select("id,client_id,estado").eq("id", story_id).maybe_single().execute()
+    story = result.data if result else None
+    if not story:
+        raise HTTPException(status_code=404, detail="Historia no encontrada")
+    _client_or_error(db, story["client_id"], employee.agency_id)
+    if story.get("estado") in _LOCKED_STATES:
+        raise HTTPException(status_code=409, detail="La historia ya fue publicada o cancelada")
+    updated = db.table("stories").update({"aprobado": body.aprobado}).eq("id", story_id).execute().data
+    return updated[0]
+
+
+class DayTimePatch(BaseModel):
+    hora_publicacion: str
+
+    @field_validator("hora_publicacion")
+    @classmethod
+    def _valid_time(cls, value: str) -> str:
+        if not _valid_hhmm(value):
+            raise ValueError("Hora inválida (formato HH:MM)")
+        return value
+
+
+@router.patch("/clientes/{client_id}/historias/manual/{fecha_publicacion}/hora")
+def update_manual_day_time(client_id: str, fecha_publicacion: str, body: DayTimePatch, employee: EmployeeDep):
+    """Updates the shared publish time for every still-editable manual story on
+    that date (the manual-upload group only — never touches an AI batch)."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    group = db.table("story_groups").select("id").eq("client_id", client_id).eq(
+        "scheduled_date", fecha_publicacion
+    ).is_("generation_week", "null").execute().data
+    if not group:
+        raise HTTPException(status_code=404, detail="No hay historias manuales para esa fecha")
+    db.table("story_groups").update({"scheduled_time": f"{body.hora_publicacion}:00"}).eq(
+        "id", group[0]["id"]
+    ).execute()
+    stories = db.table("stories").select("id,estado").eq("story_group_id", group[0]["id"]).execute().data or []
+    editable_ids = [row["id"] for row in stories if row.get("estado") not in _LOCKED_STATES]
+    if editable_ids:
+        db.table("stories").update({"hora_publicacion": f"{body.hora_publicacion}:00"}).in_(
+            "id", editable_ids
+        ).execute()
+    return {"detail": "Hora actualizada", "updated": len(editable_ids)}
 
 
 @router.patch("/historias/reordenar")

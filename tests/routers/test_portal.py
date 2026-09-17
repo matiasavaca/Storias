@@ -26,6 +26,7 @@ class Query:
 
     def select(self, *args, **kwargs): return self
     def eq(self, key, value): self.filters.append((key, value)); return self
+    def is_(self, key, value): self.filters.append((key, value)); return self
     def in_(self, key, values): self.filters.append((key, list(values))); return self
     def gte(self, key, value): self.filters.append((key, value)); return self
     def neq(self, key, value): self.filters.append((key, value)); return self
@@ -150,6 +151,118 @@ def test_default_ritmo_reports_global_offsets(client):
     assert response.json() == {"publish_days": [
         {"day": 0, "time": "09:00"}, {"day": 2, "time": "09:00"},
         {"day": 4, "time": "09:00"}, {"day": 6, "time": "09:00"}]}
+
+
+def test_create_manual_story_creates_group_and_first_story(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [], [{"id": "g1"}], [{"id": "s1", "order": 1}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.uploads.upload_image", lambda data, client_id, tag: "https://cdn/img.jpg")
+    response = client.post("/portal/clientes/c1/historias/manual",
+        data={"fecha_publicacion": "2026-09-25", "hora_publicacion": "10:00"},
+        files={"image": ("photo.jpg", b"fake-bytes", "image/jpeg")})
+    assert response.status_code == 200
+    assert response.json() == {"id": "s1", "order": 1}
+    group_insert = next(p for t, p in db.inserts if t == "story_groups")
+    assert group_insert["scheduled_date"] == "2026-09-25" and group_insert["scheduled_time"] == "10:00:00"
+    story_insert = next(p for t, p in db.inserts if t == "stories")
+    assert story_insert["image_url"] == "https://cdn/img.jpg" and story_insert["order"] == 1
+    assert story_insert["fecha_publicacion"] == "2026-09-25" and story_insert["hora_publicacion"] == "10:00:00"
+    assert story_insert["aprobado"] is False
+
+
+def test_create_manual_story_adds_to_existing_manual_group_on_same_date(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "g1"}], [{"order": 2}], [{"id": "s2", "order": 3}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.uploads.upload_image", lambda data, client_id, tag: "https://cdn/img2.jpg")
+    response = client.post("/portal/clientes/c1/historias/manual",
+        data={"fecha_publicacion": "2026-09-25", "hora_publicacion": "10:00"},
+        files={"image": ("photo.jpg", b"fake-bytes", "image/jpeg")})
+    assert response.status_code == 200
+    story_insert = next(p for t, p in db.inserts if t == "stories")
+    assert story_insert["order"] == 3 and story_insert["story_group_id"] == "g1"
+    assert not any(t == "story_groups" for t, _ in db.inserts)
+
+
+def test_create_manual_story_rejects_invalid_date(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.post("/portal/clientes/c1/historias/manual",
+        data={"fecha_publicacion": "not-a-date", "hora_publicacion": "10:00"},
+        files={"image": ("photo.jpg", b"fake-bytes", "image/jpeg")})
+    assert response.status_code == 422
+    assert db.inserts == []
+
+
+def test_create_manual_story_surfaces_upload_errors(monkeypatch, client):
+    from app.services import uploads
+    db = DB([{"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    def boom(data, client_id, tag): raise uploads.UploadError("El archivo no es una imagen válida.")
+    monkeypatch.setattr("app.routers.portal.uploads.upload_image", boom)
+    response = client.post("/portal/clientes/c1/historias/manual",
+        data={"fecha_publicacion": "2026-09-25", "hora_publicacion": "10:00"},
+        files={"image": ("photo.jpg", b"not-an-image", "image/jpeg")})
+    assert response.status_code == 422
+    assert db.inserts == []
+
+
+def test_approve_story_toggles_flag(monkeypatch, client):
+    db = DB([{"id": "s1", "client_id": "c1", "estado": "pendiente"},
+              {"id": "c1", "agency_id": "agency-1"}, [{"id": "s1", "aprobado": True}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/historias/s1/aprobar", json={"aprobado": True})
+    assert response.status_code == 200
+    assert response.json()["aprobado"] is True
+    assert db.updates == [("stories", {"aprobado": True}, [("id", "s1")])]
+
+
+def test_approve_story_rejects_locked_state(monkeypatch, client):
+    db = DB([{"id": "s1", "client_id": "c1", "estado": "publicado"},
+              {"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/historias/s1/aprobar", json={"aprobado": True})
+    assert response.status_code == 409
+
+
+def test_approve_story_not_found(monkeypatch, client):
+    db = DB([None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/historias/missing/aprobar", json={"aprobado": True})
+    assert response.status_code == 404
+
+
+def test_update_manual_day_time_updates_group_and_editable_stories(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"},                # client lookup
+              [{"id": "g1"}],                                       # manual group lookup
+              None,                                                 # story_groups update
+              [{"id": "s1", "estado": "pendiente"}, {"id": "s2", "estado": "publicado"}],  # stories lookup
+              None])                                                # stories update
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/hora",
+        json={"hora_publicacion": "14:30"})
+    assert response.status_code == 200
+    assert response.json() == {"detail": "Hora actualizada", "updated": 1}
+    group_update = next(u for u in db.updates if u[0] == "story_groups")
+    assert group_update[1] == {"scheduled_time": "14:30:00"}
+    stories_update = next(u for u in db.updates if u[0] == "stories")
+    assert stories_update[1] == {"hora_publicacion": "14:30:00"}
+    assert stories_update[2] == [("id", ["s1"])]
+
+
+def test_update_manual_day_time_rejects_bad_format(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/hora",
+        json={"hora_publicacion": "25:00"})
+    assert response.status_code == 422
+
+
+def test_update_manual_day_time_requires_existing_manual_group(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, []])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/hora",
+        json={"hora_publicacion": "14:30"})
+    assert response.status_code == 404
 
 
 def test_patch_client_team_validates_team_belongs_to_agency(monkeypatch, client):

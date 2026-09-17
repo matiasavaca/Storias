@@ -209,7 +209,7 @@ def publish_daily(db, today: date | None = None, now: datetime | None = None) ->
     now = now or datetime.now(ZoneInfo(TIMEZONE))
     query = db.table("stories").select(
         "*, clients(instagram_account_id, meta_access_token_encrypted, calendly_link)"
-    ).eq("fecha_publicacion", today.isoformat()).eq("estado", "pendiente")
+    ).eq("fecha_publicacion", today.isoformat()).eq("estado", "pendiente").eq("aprobado", True)
     # hora_publicacion is nullable (rows from before this column existed): treat
     # those as always due, same as the old once-a-day behavior.
     query = query.or_(f"hora_publicacion.is.null,hora_publicacion.lte.{now.strftime('%H:%M:%S')}")
