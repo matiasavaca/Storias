@@ -138,6 +138,18 @@ def patch_client(client_id: str, body: ClientPatch, employee: EmployeeDep):
     return updated or {**current, **changes}
 
 
+@router.get("/clientes/{client_id}/historial")
+def list_prompt_history(client_id: str, employee: EmployeeDep):
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    rows = db.table("prompt_history").select(
+        "id,field,old_value,new_value,changed_at,changed_by,employees(name)"
+    ).eq("client_id", client_id).order("changed_at", desc=True).limit(50).execute().data or []
+    for row in rows:
+        row["changed_by_name"] = (row.pop("employees", None) or {}).get("name")
+    return rows
+
+
 @router.patch("/clientes/{client_id}/equipo")
 def patch_client_team(client_id: str, body: ClientTeamPatch, employee: EmployeeDep):
     """Reassign which team manages this client — purely organizational, so it

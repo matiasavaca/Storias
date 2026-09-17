@@ -30,6 +30,7 @@ class Query:
     def gte(self, key, value): self.filters.append((key, value)); return self
     def neq(self, key, value): self.filters.append((key, value)); return self
     def order(self, *args, **kwargs): return self
+    def limit(self, *args, **kwargs): return self
     def maybe_single(self): self.is_maybe_single = True; return self
     def update(self, payload): self.payload = payload; self.db.updates.append((self.table, payload, self.filters)); return self
     def insert(self, payload): self.payload = payload; self.db.inserts.append((self.table, payload)); return self
@@ -80,6 +81,18 @@ def test_list_teams_scopes_to_employee_agency(monkeypatch, client):
     response = client.get("/portal/equipos")
     assert response.status_code == 200
     assert response.json() == [{"id": "t1", "name": "Equipo A"}, {"id": "t2", "name": "Equipo B"}]
+
+
+def test_history_flattens_employee_name_and_requires_agency_match(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [
+        {"id": "h1", "field": "business_description", "old_value": "a", "new_value": "b",
+         "changed_at": "2026-01-01T00:00:00Z", "changed_by": "emp-1", "employees": {"name": "PM"}},
+    ]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.get("/portal/clientes/c1/historial")
+    assert response.status_code == 200
+    assert response.json() == [{"id": "h1", "field": "business_description", "old_value": "a",
+        "new_value": "b", "changed_at": "2026-01-01T00:00:00Z", "changed_by": "emp-1", "changed_by_name": "PM"}]
 
 
 def test_create_team_inserts_scoped_to_agency(monkeypatch, client):
