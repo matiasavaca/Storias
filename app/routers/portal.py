@@ -13,7 +13,7 @@ from app.deps import EmployeeDep
 from app.engine import content
 from app.engine.schemas import ImagenCandidata
 from app.services import drive
-from app.services.content_jobs import build_content_config
+from app.services.content_jobs import PUBLISH_DAY_OFFSETS, build_content_config
 
 router = APIRouter(prefix="/portal", tags=["portal"])
 
@@ -24,7 +24,7 @@ _LOCKED_STATES = {"publicando", "publicado", "cancelada"}
 _CLIENT_DETAIL = (
     "id,agency_id,name,business_description,weekly_focus,"
     "weekly_focus_expires_at,tone_examples,topics,drive_folder_id,logo_url,"
-    "calendly_link,prob_link,generation_error,generation_error_at,team_id"
+    "calendly_link,prob_link,generation_error,generation_error_at,team_id,publish_days"
 )
 
 
@@ -45,6 +45,19 @@ class ClientPatch(BaseModel):
 
 class ClientTeamPatch(BaseModel):
     team_id: str | None = None
+
+
+class ClientRitmoPatch(BaseModel):
+    publish_days: list[int] | None = None
+
+    @field_validator("publish_days")
+    @classmethod
+    def exactly_four_distinct_weekdays(cls, value):
+        if value is None:
+            return None
+        if len(set(value)) != 4 or any(day < 0 or day > 6 for day in value):
+            raise ValueError("publish_days debe tener exactamente 4 días distintos (0=lunes..6=domingo)")
+        return sorted(value)
 
 
 class TeamCreate(BaseModel):
@@ -194,6 +207,23 @@ def patch_client_team(client_id: str, body: ClientTeamPatch, employee: EmployeeD
         "id", client_id
     ).execute().data
     return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "team_id": body.team_id}
+
+
+@router.patch("/clientes/{client_id}/ritmo")
+def patch_client_ritmo(client_id: str, body: ClientRitmoPatch, employee: EmployeeDep):
+    """Which 4 weekdays this client's weekly thread publishes on — purely a
+    scheduling setting, so a plain update instead of the audited RPC."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    updated = db.table("clients").update({"publish_days": body.publish_days}).eq(
+        "id", client_id
+    ).execute().data
+    return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "publish_days": body.publish_days}
+
+
+@router.get("/ritmo-default")
+def get_default_ritmo(employee: EmployeeDep):
+    return {"publish_days": list(PUBLISH_DAY_OFFSETS)}
 
 
 @router.post("/clientes/{client_id}/probar-prompt")

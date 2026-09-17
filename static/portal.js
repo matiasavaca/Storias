@@ -150,18 +150,32 @@
     return isoDate ? new Intl.DateTimeFormat('es-AR', {weekday:'short', day:'numeric', timeZone:'UTC'}).format(new Date(`${isoDate}T00:00:00Z`)) : '';
   }
   function renderPlan() {
-    const next = state.groups[0];
-    const stories = next ? [...(next.stories || [])] : [];
+    // state.groups[0] is the current/active batch (shown in "Historias generadas");
+    // this panel previews the one after it, if it's already been generated.
+    // The panel itself (and "Editar ritmo") stays visible either way — ritmo is
+    // a forward-looking setting, not something tied to content that already exists.
+    $('plan-panel').classList.remove('hidden');
+    const upcoming = state.groups[1];
+    const stories = upcoming ? [...(upcoming.stories || [])] : [];
     const dated = stories.filter((story) => story.fecha_publicacion)
       .sort((a,b) => a.fecha_publicacion.localeCompare(b.fecha_publicacion));
-    if (dated.length < 2) { $('plan-panel').classList.add('hidden'); return; }
+    $('plan-preview').classList.add('hidden');
+    if (!dated.length) {
+      $('plan-range').textContent = '';
+      $('plan-days').innerHTML = '<div class="empty">Todavía no se generó el próximo hilo. Se genera automáticamente los viernes a las 18:00hs.</div>';
+      return;
+    }
     const first = dated[0].fecha_publicacion, last = dated[dated.length - 1].fecha_publicacion;
-    $('plan-range').textContent = `${dayLabel(first)} – ${dayLabel(last)}`;
+    $('plan-range').textContent = first === last ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;
     $('plan-days').innerHTML = dated.map((story) => {
       const title = story.text.length > 60 ? story.text.slice(0, 57) + '…' : story.text;
-      return `<div class="plan-day" data-story-id="${escapeHtml(story.id)}"><span class="grip">⠿</span><span class="thumb">📝</span><div><div class="date">${escapeHtml(dayLabel(story.fecha_publicacion))}</div><div class="time">${next.scheduled_time ? next.scheduled_time.slice(0,5) + 'hs' : ''}</div><div class="title">${escapeHtml(title)}</div><div class="type">Story única</div></div></div>`;
+      return `<div class="plan-day" data-story-id="${escapeHtml(story.id)}"><span class="grip">⠿</span><span class="thumb">📝</span><div><div class="date">${escapeHtml(dayLabel(story.fecha_publicacion))}</div><div class="time">${upcoming.scheduled_time ? upcoming.scheduled_time.slice(0,5) + 'hs' : ''}</div><div class="title">${escapeHtml(title)}</div><div class="type">Story única</div></div></div>`;
     }).join('');
-    $('plan-panel').classList.remove('hidden');
+  }
+  function showPlanPreview(story) {
+    $('plan-preview').innerHTML = `${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Vista previa">` : ''}<div class="plan-preview-body"><p>${escapeHtml(story.text)}</p><button class="btn" data-edit-story-id="${escapeHtml(story.id)}">✎ Editar esta historia</button></div>`;
+    $('plan-preview').classList.remove('hidden');
+    $('plan-preview').scrollIntoView({behavior:'smooth', block:'nearest'});
   }
   function groupDate(group) {
     const raw = group.scheduled_date || group.generation_week;
@@ -174,14 +188,14 @@
     return first === last ? first : `${first} – ${last}`;
   }
   function renderStories() {
-    if (!state.groups.length) { $('stories').innerHTML = '<div class="empty">No hay historias próximas para este cliente.</div>'; $('week-badge').classList.add('hidden'); return; }
-    const next = state.groups[0];
-    if (next.scheduled_date) { $('week-badge').textContent = `${groupRangeLabel(next)}${next.scheduled_time ? ' · ' + next.scheduled_time.slice(0,5) + 'hs' : ''}`; $('week-badge').classList.remove('hidden'); }
+    // Only the current/active batch — the next one (if already generated) has
+    // its own condensed preview in "Plan de la próxima semana" instead.
+    const group = state.groups[0];
+    if (!group) { $('stories').innerHTML = '<div class="empty">No hay historias próximas para este cliente.</div>'; $('week-badge').classList.add('hidden'); return; }
+    if (group.scheduled_date) { $('week-badge').textContent = `${groupRangeLabel(group)}${group.scheduled_time ? ' · ' + group.scheduled_time.slice(0,5) + 'hs' : ''}`; $('week-badge').classList.remove('hidden'); }
     else $('week-badge').classList.add('hidden');
-    $('stories').innerHTML = state.groups.map((group) => {
-      const stories = [...(group.stories || [])].sort((a,b) => a.order - b.order);
-      return `<section class="group" data-group-id="${escapeHtml(group.id)}"><div class="group-head"><h3>${escapeHtml(groupRangeLabel(group))}</h3><span class="badge">${escapeHtml(group.status || 'pending')}</span></div><div class="stories">${stories.map((story,index) => storyCard(story,index,stories.length)).join('')}</div></section>`;
-    }).join('');
+    const stories = [...(group.stories || [])].sort((a,b) => a.order - b.order);
+    $('stories').innerHTML = `<section class="group" data-group-id="${escapeHtml(group.id)}"><div class="stories">${stories.map((story,index) => storyCard(story,index,stories.length)).join('')}</div></section>`;
   }
   function renderActivity() {
     const next = state.groups[0];
@@ -240,6 +254,32 @@
     } catch(error) { if (selectionVersion === state.selectionVersion) { preview.textContent=error.message; preview.classList.add('error'); } }
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) button.disabled=false; }
   }
+  const RITMO_LABELS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+  let ritmoSelected = new Set();
+  function renderRitmoDays() {
+    $('ritmo-days').innerHTML = RITMO_LABELS.map((label, day) => {
+      const checked = ritmoSelected.has(day), disabled = !checked && ritmoSelected.size >= 4;
+      return `<div class="ritmo-day${checked?' checked':''}${disabled?' disabled':''}" data-day="${day}">${label}</div>`;
+    }).join('');
+  }
+  async function openRitmo() {
+    let days = state.client?.publish_days;
+    if (!days) { try { days = (await api('/portal/ritmo-default')).publish_days; } catch(_) { days = [0,2,4,6]; } }
+    ritmoSelected = new Set(days);
+    renderRitmoDays();
+    $('ritmo-dialog').showModal();
+  }
+  async function saveRitmo() {
+    const clientId = state.client?.id, selectionVersion = state.selectionVersion;
+    if (!clientId || ritmoSelected.size !== 4) { showMessage('Elegí exactamente 4 días.', true); return; }
+    $('save-ritmo').disabled = true;
+    try {
+      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/ritmo`, {method:'PATCH', body:JSON.stringify({publish_days:[...ritmoSelected]})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.client.publish_days = updated.publish_days; $('ritmo-dialog').close(); showMessage('Ritmo de publicación actualizado.');
+    } catch(error) { showMessage(error.message, true); }
+    finally { $('save-ritmo').disabled = false; }
+  }
   async function openHistory() {
     const clientId = state.client?.id; if (!clientId) return;
     $('history-list').textContent = 'Cargando...'; $('history-dialog').showModal();
@@ -289,9 +329,15 @@
   $('qa-history').addEventListener('click',openHistory);
   $('close-history').addEventListener('click',()=>$('history-dialog').close());
   $('close-history-2').addEventListener('click',()=>$('history-dialog').close());
+  $('edit-ritmo').addEventListener('click',openRitmo);
+  $('close-ritmo').addEventListener('click',()=>$('ritmo-dialog').close());
+  $('cancel-ritmo').addEventListener('click',()=>$('ritmo-dialog').close());
+  $('save-ritmo').addEventListener('click',saveRitmo);
+  $('ritmo-days').addEventListener('click',(event)=>{const cell=event.target.closest('[data-day]');if(!cell||cell.classList.contains('disabled'))return;const day=Number(cell.dataset.day);if(ritmoSelected.has(day))ritmoSelected.delete(day);else ritmoSelected.add(day);renderRitmoDays();});
   $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); setFieldMode('description',true); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
   $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
-  $('plan-days').addEventListener('click',(event)=>{const card=event.target.closest('[data-story-id]');if(!card)return;const found=findStory(card.dataset.storyId);if(found)openStory(found.story);});
+  $('plan-days').addEventListener('click',(event)=>{const card=event.target.closest('[data-story-id]');if(!card)return;const found=findStory(card.dataset.storyId);if(found)showPlanPreview(found.story);});
+  $('plan-preview').addEventListener('click',(event)=>{const btn=event.target.closest('[data-edit-story-id]');if(!btn)return;const found=findStory(btn.dataset.editStoryId);if(found)openStory(found.story);});
   $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close());
   loadMeAndTeams().finally(loadClients);
 })();

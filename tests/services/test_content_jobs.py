@@ -124,6 +124,26 @@ def test_weekly_continues_after_insufficient_images_and_saves_complete_thread(ge
         "2026-09-21", "2026-09-23", "2026-09-25", "2026-09-27"]
 
 
+def test_weekly_uses_clients_custom_publish_days(generation):
+    _, engine = generation
+    db = Database([client(publish_days=[1, 3, 5, 6])])  # Tue/Thu/Sat/Sun
+    jobs.generate_weekly(db, date(2026, 9, 18))
+    assert [s["fecha_publicacion"] for s in db.saved[0]["p_stories"]] == [
+        "2026-09-22", "2026-09-24", "2026-09-26", "2026-09-27"]
+
+
+@pytest.mark.parametrize("days,expected", [
+    (None, jobs.PUBLISH_DAY_OFFSETS),
+    ([0, 2, 4, 6], (0, 2, 4, 6)),
+    ([6, 0, 2, 4], (0, 2, 4, 6)),
+    ([0, 0, 2, 4], jobs.PUBLISH_DAY_OFFSETS),  # not 4 distinct days -> fall back
+    ([0, 2, 4, 7], jobs.PUBLISH_DAY_OFFSETS),  # out of range -> fall back
+    ("garbage", jobs.PUBLISH_DAY_OFFSETS),
+])
+def test_publish_day_offsets_validates_and_falls_back(days, expected):
+    assert jobs.publish_day_offsets({"publish_days": days}) == tuple(expected)
+
+
 def test_engine_error_does_not_stop_next_client_or_consume_focus(generation):
     _, engine = generation
     engine.side_effect = [ClaudeGenerationError("Claude unavailable"), generated()]

@@ -37,6 +37,15 @@ def build_content_config(row: dict) -> ClientContentConfig:
     )
 
 
+def publish_day_offsets(row: dict) -> tuple[int, ...]:
+    """A client's custom publishing cadence (4 unique weekday offsets, 0=Mon..6=Sun),
+    or the global default if unset/invalid."""
+    days = row.get("publish_days")
+    if isinstance(days, list) and len(set(days)) == 4 and all(isinstance(d, int) and 0 <= d <= 6 for d in days):
+        return tuple(sorted(days))
+    return PUBLISH_DAY_OFFSETS
+
+
 def _all_rows(query):
     """Collect the snapshot before updates alter a pending query's offsets."""
     rows, offset = [], 0
@@ -58,7 +67,7 @@ def _thread_payload(row: dict, config: ClientContentConfig, result: HiloGenerado
         raise ValueError("Engine returned unexpected Drive image IDs")
     monday = today - timedelta(days=today.weekday())
     next_monday = monday + timedelta(days=7)
-    publish_dates = [next_monday + timedelta(days=offset) for offset in PUBLISH_DAY_OFFSETS]
+    publish_dates = [next_monday + timedelta(days=offset) for offset in publish_day_offsets(row)]
     settings = get_settings()
     return {
         "p_client_id": config.client_id,

@@ -108,6 +108,15 @@
     .plan-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px}
     .plan-head h2{font-size:13px;font-weight:650;display:flex;align-items:center;gap:7px}
     .plan-days{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    .plan-preview{margin-top:14px;padding-top:14px;border-top:1px solid var(--border);display:flex;gap:14px}
+    .plan-preview img{width:90px;border-radius:9px;aspect-ratio:9/16;object-fit:cover;flex-shrink:0}
+    .plan-preview-body{display:flex;flex-direction:column;gap:10px;justify-content:center}
+    .plan-preview-body p{font-size:13px;line-height:1.5}
+    .plan-head{gap:10px;flex-wrap:wrap}
+    .ritmo-days{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
+    .ritmo-day{border:1px solid var(--border);border-radius:9px;padding:10px 6px;text-align:center;font-size:12px;cursor:pointer;user-select:none;background:var(--surface)}
+    .ritmo-day.checked{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:650}
+    .ritmo-day.disabled{opacity:.4;cursor:not-allowed}
     .plan-day{border:1px solid var(--border);border-radius:11px;padding:10px;display:flex;gap:8px;align-items:flex-start;cursor:pointer;background:var(--bg);transition:border-color .12s}
     .plan-day:hover{border-color:var(--accent)}
     .plan-day .grip{color:var(--muted);font-size:12px;line-height:1;margin-top:2px}
@@ -245,8 +254,9 @@
           </div>
         </div>
         <div id="plan-panel" class="plan-panel hidden">
-          <div class="plan-head"><h2>📅 Plan de la próxima semana <span id="plan-range" class="week-badge"></span></h2></div>
+          <div class="plan-head"><h2>📅 Plan de la próxima semana <span id="plan-range" class="week-badge"></span></h2><button id="edit-ritmo" class="btn">⚡ Editar ritmo</button></div>
           <div id="plan-days" class="plan-days"></div>
+          <div id="plan-preview" class="plan-preview hidden"></div>
         </div>
         <div class="workspace">
           <div class="stories-panel">
@@ -274,4 +284,5 @@
   </div>
   <dialog id="story-dialog"><div class="modal-head"><strong>Editar historia</strong><button id="close-story" class="icon-btn" aria-label="Cerrar">×</button></div><div class="modal-body"><textarea id="story-text"></textarea></div><div class="modal-foot"><button id="cancel-story-edit" class="btn">Cancelar</button><button id="save-story" class="btn primary">Guardar historia</button></div></dialog>
   <dialog id="history-dialog" class="wide"><div class="modal-head"><strong>Historial de cambios</strong><button id="close-history" class="icon-btn" aria-label="Cerrar">×</button></div><div class="modal-body" id="history-list"></div><div class="modal-foot"><button id="close-history-2" class="btn">Cerrar</button></div></dialog>
+  <dialog id="ritmo-dialog"><div class="modal-head"><strong>Editar ritmo de publicación</strong><button id="close-ritmo" class="icon-btn" aria-label="Cerrar">×</button></div><div class="modal-body"><p class="hint">Elegí exactamente 4 días de la semana. Las 4 historias de cada hilo semanal se publican en esos días.</p><div id="ritmo-days" class="ritmo-days"></div></div><div class="modal-foot"><button id="cancel-ritmo" class="btn">Cancelar</button><button id="save-ritmo" class="btn primary">Guardar</button></div></dialog>
 </body></html>

@@ -118,6 +118,26 @@ def test_create_team_rejects_duplicate_name(monkeypatch, client):
     assert response.status_code == 409
 
 
+def test_patch_client_ritmo_saves_four_distinct_days(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "c1", "publish_days": [1, 3, 5, 6]}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": [6, 1, 3, 5]})
+    assert response.status_code == 200
+    assert response.json()["publish_days"] == [1, 3, 5, 6]
+    assert db.updates == [("clients", {"publish_days": [1, 3, 5, 6]}, [("id", "c1")])]
+
+
+def test_patch_client_ritmo_rejects_non_distinct_days(monkeypatch, client):
+    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": [1, 1, 3, 5]})
+    assert response.status_code == 422
+
+
+def test_default_ritmo_reports_global_offsets(client):
+    response = client.get("/portal/ritmo-default")
+    assert response.status_code == 200
+    assert response.json() == {"publish_days": [0, 2, 4, 6]}
+
+
 def test_patch_client_team_validates_team_belongs_to_agency(monkeypatch, client):
     db = DB([{"id": "c1", "agency_id": "agency-1"}, {"id": "t1"}, [{"id": "c1", "team_id": "t1"}]])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
