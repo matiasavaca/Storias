@@ -37,13 +37,32 @@ def build_content_config(row: dict) -> ClientContentConfig:
     )
 
 
-def publish_day_offsets(row: dict) -> tuple[int, ...]:
-    """A client's custom publishing cadence (4 unique weekday offsets, 0=Mon..6=Sun),
-    or the global default if unset/invalid."""
+def _valid_hhmm(value) -> bool:
+    if not isinstance(value, str) or len(value) != 5 or value[2] != ":":
+        return False
+    hour, _, minute = value.partition(":")
+    return hour.isdigit() and minute.isdigit() and 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59
+
+
+def publish_schedule(row: dict) -> tuple[tuple[int, str], ...]:
+    """A client's custom (weekday, 'HH:MM') publish schedule — 4 entries, each
+    a distinct weekday (0=Mon..6=Sun) with its own time — or the global
+    default (PUBLISH_DAY_OFFSETS at the configured publication hour) if
+    `clients.publish_days` is unset or malformed."""
     days = row.get("publish_days")
-    if isinstance(days, list) and len(set(days)) == 4 and all(isinstance(d, int) and 0 <= d <= 6 for d in days):
-        return tuple(sorted(days))
-    return PUBLISH_DAY_OFFSETS
+    if isinstance(days, list) and len(days) == 4:
+        try:
+            parsed = [(int(entry["day"]), str(entry["time"])) for entry in days]
+        except (KeyError, TypeError, ValueError):
+            parsed = None
+        if parsed is not None:
+            weekdays = {day for day, _ in parsed}
+            if len(weekdays) == 4 and all(0 <= day <= 6 for day in weekdays) \
+                    and all(_valid_hhmm(hhmm) for _, hhmm in parsed):
+                return tuple(sorted(parsed))
+    settings = get_settings()
+    default_time = f"{settings.publication_hour:02d}:{settings.publication_minute:02d}"
+    return tuple((offset, default_time) for offset in PUBLISH_DAY_OFFSETS)
 
 
 def _all_rows(query):
@@ -67,18 +86,19 @@ def _thread_payload(row: dict, config: ClientContentConfig, result: HiloGenerado
         raise ValueError("Engine returned unexpected Drive image IDs")
     monday = today - timedelta(days=today.weekday())
     next_monday = monday + timedelta(days=7)
-    publish_dates = [next_monday + timedelta(days=offset) for offset in publish_day_offsets(row)]
-    settings = get_settings()
+    schedule = publish_schedule(row)
+    publish_dates = [next_monday + timedelta(days=offset) for offset, _ in schedule]
     return {
         "p_client_id": config.client_id,
         "p_generation_week": monday.isoformat(),
         "p_scheduled_date": next_monday.isoformat(),
-        "p_scheduled_time": f"{settings.publication_hour:02d}:{settings.publication_minute:02d}:00",
+        "p_scheduled_time": f"{schedule[0][1]}:00",
         "p_used_focus": config.weekly_focus,
         "p_used_focus_expires_at": row.get("weekly_focus_expires_at"),
         "p_stories": [{"text": result.historias[i], "image_url": result.imagenes_editadas_url[i],
             "image_original_url": result.imagenes_originales_url[i],
             "fecha_publicacion": publish_dates[i].isoformat(),
+            "hora_publicacion": f"{schedule[i][1]}:00",
             # Read what the engine actually drew on the image (result.cta_agregado),
             # don't re-roll the dice here: a second independent draw could disagree
             # with the composed image and persist a flag that doesn't match it.
@@ -181,12 +201,19 @@ def _publish_story(story: dict) -> dict:
     return {"estado": "error", "error": message}
 
 
-def publish_daily(db, today: date | None = None) -> None:
+def publish_daily(db, today: date | None = None, now: datetime | None = None) -> None:
+    """Runs frequently (every 15 min, see scheduler.py) rather than once a day,
+    so each story publishes close to its own hora_publicacion instead of all of
+    today's stories firing together at one fixed daily time."""
     today = today or local_today()
-    stories = _all_rows(db.table("stories").select(
+    now = now or datetime.now(ZoneInfo(TIMEZONE))
+    query = db.table("stories").select(
         "*, clients(instagram_account_id, meta_access_token_encrypted, calendly_link)"
     ).eq("fecha_publicacion", today.isoformat()).eq("estado", "pendiente")
-      .order("story_group_id").order("order").order("id"))
+    # hora_publicacion is nullable (rows from before this column existed): treat
+    # those as always due, same as the old once-a-day behavior.
+    query = query.or_(f"hora_publicacion.is.null,hora_publicacion.lte.{now.strftime('%H:%M:%S')}")
+    stories = _all_rows(query.order("story_group_id").order("order").order("id"))
     for story in stories:
         try:
             claimed = db.table("stories").update({"estado": "publicando"}).eq(

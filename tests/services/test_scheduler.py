@@ -19,7 +19,11 @@ def test_beat_has_weekly_friday_and_configured_daily_schedule():
     assert weekly["schedule"].hour == {18} and weekly["schedule"].minute == {0}
     daily = schedules["publish-daily-stories"]
     assert daily["task"] == "app.services.scheduler.publicar_historias_pendientes"
-    assert daily["schedule"].hour == {11} and daily["schedule"].minute == {25}
+    # Every 15 min (all 24 hours), not tied to publication_hour/minute anymore —
+    # each client can have its own per-day publish time (content_jobs.publish_schedule),
+    # so this has to check frequently rather than fire once at one fixed daily time.
+    assert daily["schedule"].minute == {0, 15, 30, 45}
+    assert daily["schedule"].hour == set(range(24))
 
 
 @pytest.mark.parametrize("task_name,worker", [

@@ -113,10 +113,13 @@
     .plan-preview-body{display:flex;flex-direction:column;gap:10px;justify-content:center}
     .plan-preview-body p{font-size:13px;line-height:1.5}
     .plan-head{gap:10px;flex-wrap:wrap}
-    .ritmo-days{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
-    .ritmo-day{border:1px solid var(--border);border-radius:9px;padding:10px 6px;text-align:center;font-size:12px;cursor:pointer;user-select:none;background:var(--surface)}
-    .ritmo-day.checked{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:650}
-    .ritmo-day.disabled{opacity:.4;cursor:not-allowed}
+    .calendar-days{display:flex;flex-direction:column;gap:6px}
+    .cal-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;border:1px solid transparent}
+    .cal-row.checked{background:var(--accent-soft);border-color:var(--accent)}
+    .cal-check{display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;flex:1;user-select:none}
+    .cal-check input{cursor:pointer}
+    .cal-row input[type=time]{border:1px solid var(--border);border-radius:7px;padding:4px 6px;font-size:11px;background:var(--surface);color:var(--fg);width:90px}
+    .cal-row input[type=time]:disabled{opacity:.4}
     .plan-day{border:1px solid var(--border);border-radius:11px;padding:10px;display:flex;gap:8px;align-items:flex-start;cursor:pointer;background:var(--bg);transition:border-color .12s}
     .plan-day:hover{border-color:var(--accent)}
     .plan-day .grip{color:var(--muted);font-size:12px;line-height:1;margin-top:2px}
@@ -254,7 +257,7 @@
           </div>
         </div>
         <div id="plan-panel" class="plan-panel hidden">
-          <div class="plan-head"><h2>📅 Plan de la próxima semana <span id="plan-range" class="week-badge"></span></h2><button id="edit-ritmo" class="btn">⚡ Editar ritmo</button></div>
+          <div class="plan-head"><h2>📅 Plan de la próxima semana <span id="plan-range" class="week-badge"></span></h2></div>
           <div id="plan-days" class="plan-days"></div>
           <div id="plan-preview" class="plan-preview hidden"></div>
         </div>
@@ -264,6 +267,12 @@
             <div id="stories" aria-live="polite">Cargando...</div>
           </div>
           <div class="side-col">
+            <aside class="activity">
+              <h3>📅 Calendario</h3>
+              <p class="hint">Elegí los 4 días y horarios en que se publican las historias de este cliente.</p>
+              <div id="calendar-days" class="calendar-days"></div>
+              <button id="save-calendar" class="btn primary hidden">Guardar calendario</button>
+            </aside>
             <aside class="activity">
               <h3>✨ Actividad de IA</h3>
               <div id="activity-list" class="activity-list"></div>
@@ -284,5 +293,4 @@
   </div>
   <dialog id="story-dialog"><div class="modal-head"><strong>Editar historia</strong><button id="close-story" class="icon-btn" aria-label="Cerrar">×</button></div><div class="modal-body"><textarea id="story-text"></textarea></div><div class="modal-foot"><button id="cancel-story-edit" class="btn">Cancelar</button><button id="save-story" class="btn primary">Guardar historia</button></div></dialog>
   <dialog id="history-dialog" class="wide"><div class="modal-head"><strong>Historial de cambios</strong><button id="close-history" class="icon-btn" aria-label="Cerrar">×</button></div><div class="modal-body" id="history-list"></div><div class="modal-foot"><button id="close-history-2" class="btn">Cerrar</button></div></dialog>
-  <dialog id="ritmo-dialog"><div class="modal-head"><strong>Editar ritmo de publicación</strong><button id="close-ritmo" class="icon-btn" aria-label="Cerrar">×</button></div><div class="modal-body"><p class="hint">Elegí exactamente 4 días de la semana. Las 4 historias de cada hilo semanal se publican en esos días.</p><div id="ritmo-days" class="ritmo-days"></div></div><div class="modal-foot"><button id="cancel-ritmo" class="btn">Cancelar</button><button id="save-ritmo" class="btn primary">Guardar</button></div></dialog>
 </body></html>

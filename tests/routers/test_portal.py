@@ -119,23 +119,37 @@ def test_create_team_rejects_duplicate_name(monkeypatch, client):
 
 
 def test_patch_client_ritmo_saves_four_distinct_days(monkeypatch, client):
-    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "c1", "publish_days": [1, 3, 5, 6]}]])
+    saved_days = [{"day": 1, "time": "08:00"}, {"day": 3, "time": "12:00"},
+                  {"day": 5, "time": "18:00"}, {"day": 6, "time": "20:00"}]
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "c1", "publish_days": saved_days}]])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
-    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": [6, 1, 3, 5]})
+    unsorted = [saved_days[3], saved_days[0], saved_days[1], saved_days[2]]
+    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": unsorted})
     assert response.status_code == 200
-    assert response.json()["publish_days"] == [1, 3, 5, 6]
-    assert db.updates == [("clients", {"publish_days": [1, 3, 5, 6]}, [("id", "c1")])]
+    assert response.json()["publish_days"] == saved_days
+    assert db.updates == [("clients", {"publish_days": saved_days}, [("id", "c1")])]
 
 
 def test_patch_client_ritmo_rejects_non_distinct_days(monkeypatch, client):
-    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": [1, 1, 3, 5]})
+    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": [
+        {"day": 1, "time": "08:00"}, {"day": 1, "time": "09:00"},
+        {"day": 3, "time": "08:00"}, {"day": 5, "time": "08:00"}]})
+    assert response.status_code == 422
+
+
+def test_patch_client_ritmo_rejects_bad_time_format(monkeypatch, client):
+    response = client.patch("/portal/clientes/c1/ritmo", json={"publish_days": [
+        {"day": 1, "time": "25:00"}, {"day": 2, "time": "08:00"},
+        {"day": 3, "time": "08:00"}, {"day": 5, "time": "08:00"}]})
     assert response.status_code == 422
 
 
 def test_default_ritmo_reports_global_offsets(client):
     response = client.get("/portal/ritmo-default")
     assert response.status_code == 200
-    assert response.json() == {"publish_days": [0, 2, 4, 6]}
+    assert response.json() == {"publish_days": [
+        {"day": 0, "time": "09:00"}, {"day": 2, "time": "09:00"},
+        {"day": 4, "time": "09:00"}, {"day": 6, "time": "09:00"}]}
 
 
 def test_patch_client_team_validates_team_belongs_to_agency(monkeypatch, client):

@@ -16,10 +16,14 @@ class Query:
         self.values = None
         self.sort = []
         self.bounds = None
+        self.or_expr = None
 
     def select(self, *_): return self
     def eq(self, key, value):
         self.filters.append((key, value))
+        return self
+    def or_(self, expr):
+        self.or_expr = expr
         return self
     def order(self, key):
         self.sort.append(key)
@@ -30,9 +34,20 @@ class Query:
     def range(self, start, end):
         self.bounds = (start, end)
         return self
+    def _matches_or(self, row):
+        if not self.or_expr:
+            return True
+        for clause in self.or_expr.split(','):
+            field, op, value = clause.split('.', 2)
+            cell = row.get(field)
+            if op == 'is' and value == 'null' and cell is None:
+                return True
+            if op == 'lte' and cell is not None and str(cell) <= value:
+                return True
+        return False
     def execute(self):
         rows = [r for r in self.db.rows[self.name]
-                if all(r.get(k) == v for k, v in self.filters)]
+                if all(r.get(k) == v for k, v in self.filters) and self._matches_or(r)]
         for key in reversed(self.sort):
             rows.sort(key=lambda r: r[key])
         if self.bounds:
@@ -124,24 +139,38 @@ def test_weekly_continues_after_insufficient_images_and_saves_complete_thread(ge
         "2026-09-21", "2026-09-23", "2026-09-25", "2026-09-27"]
 
 
-def test_weekly_uses_clients_custom_publish_days(generation):
+def test_weekly_uses_clients_custom_publish_schedule(generation):
     _, engine = generation
-    db = Database([client(publish_days=[1, 3, 5, 6])])  # Tue/Thu/Sat/Sun
+    custom = [{"day": 1, "time": "08:00"}, {"day": 3, "time": "12:30"},
+              {"day": 5, "time": "18:00"}, {"day": 6, "time": "20:15"}]  # Tue/Thu/Sat/Sun
+    db = Database([client(publish_days=custom)])
     jobs.generate_weekly(db, date(2026, 9, 18))
-    assert [s["fecha_publicacion"] for s in db.saved[0]["p_stories"]] == [
+    stories = db.saved[0]["p_stories"]
+    assert [s["fecha_publicacion"] for s in stories] == [
         "2026-09-22", "2026-09-24", "2026-09-26", "2026-09-27"]
+    assert [s["hora_publicacion"] for s in stories] == [
+        "08:00:00", "12:30:00", "18:00:00", "20:15:00"]
+
+
+_GLOBAL_SCHEDULE = tuple((offset, "09:00") for offset in jobs.PUBLISH_DAY_OFFSETS)
 
 
 @pytest.mark.parametrize("days,expected", [
-    (None, jobs.PUBLISH_DAY_OFFSETS),
-    ([0, 2, 4, 6], (0, 2, 4, 6)),
-    ([6, 0, 2, 4], (0, 2, 4, 6)),
-    ([0, 0, 2, 4], jobs.PUBLISH_DAY_OFFSETS),  # not 4 distinct days -> fall back
-    ([0, 2, 4, 7], jobs.PUBLISH_DAY_OFFSETS),  # out of range -> fall back
-    ("garbage", jobs.PUBLISH_DAY_OFFSETS),
+    (None, _GLOBAL_SCHEDULE),
+    ([{"day":0,"time":"08:00"},{"day":2,"time":"08:00"},{"day":4,"time":"08:00"},{"day":6,"time":"08:00"}],
+     ((0,"08:00"),(2,"08:00"),(4,"08:00"),(6,"08:00"))),
+    ([{"day":6,"time":"08:00"},{"day":0,"time":"08:00"},{"day":2,"time":"08:00"},{"day":4,"time":"08:00"}],
+     ((0,"08:00"),(2,"08:00"),(4,"08:00"),(6,"08:00"))),  # sorted by day
+    ([{"day":0,"time":"08:00"},{"day":0,"time":"09:00"},{"day":2,"time":"08:00"},{"day":4,"time":"08:00"}],
+     _GLOBAL_SCHEDULE),  # not 4 distinct days -> fall back
+    ([{"day":0,"time":"08:00"},{"day":2,"time":"08:00"},{"day":4,"time":"08:00"},{"day":7,"time":"08:00"}],
+     _GLOBAL_SCHEDULE),  # out of range -> fall back
+    ([{"day":0,"time":"25:00"},{"day":2,"time":"08:00"},{"day":4,"time":"08:00"},{"day":6,"time":"08:00"}],
+     _GLOBAL_SCHEDULE),  # invalid time -> fall back
+    ("garbage", _GLOBAL_SCHEDULE),
 ])
-def test_publish_day_offsets_validates_and_falls_back(days, expected):
-    assert jobs.publish_day_offsets({"publish_days": days}) == tuple(expected)
+def test_publish_schedule_validates_and_falls_back(days, expected):
+    assert jobs.publish_schedule({"publish_days": days}) == tuple(expected)
 
 
 def test_engine_error_does_not_stop_next_client_or_consume_focus(generation):

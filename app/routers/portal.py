@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field, field_validator
 
+from app.config import get_settings
 from app.db.supabase import get_admin_client
 from app.deps import EmployeeDep
 from app.engine import content
@@ -47,17 +48,31 @@ class ClientTeamPatch(BaseModel):
     team_id: str | None = None
 
 
+class ScheduleEntry(BaseModel):
+    day: int = Field(ge=0, le=6)
+    time: str
+
+    @field_validator("time")
+    @classmethod
+    def valid_hhmm(cls, value):
+        if len(value) != 5 or value[2] != ":" or not value[:2].isdigit() or not value[3:].isdigit() \
+                or not (0 <= int(value[:2]) <= 23) or not (0 <= int(value[3:]) <= 59):
+            raise ValueError("time debe tener formato HH:MM (24hs)")
+        return value
+
+
 class ClientRitmoPatch(BaseModel):
-    publish_days: list[int] | None = None
+    publish_days: list[ScheduleEntry] | None = None
 
     @field_validator("publish_days")
     @classmethod
     def exactly_four_distinct_weekdays(cls, value):
         if value is None:
             return None
-        if len(set(value)) != 4 or any(day < 0 or day > 6 for day in value):
+        days = [entry.day for entry in value]
+        if len(value) != 4 or len(set(days)) != 4:
             raise ValueError("publish_days debe tener exactamente 4 días distintos (0=lunes..6=domingo)")
-        return sorted(value)
+        return sorted(value, key=lambda entry: entry.day)
 
 
 class TeamCreate(BaseModel):
@@ -211,19 +226,23 @@ def patch_client_team(client_id: str, body: ClientTeamPatch, employee: EmployeeD
 
 @router.patch("/clientes/{client_id}/ritmo")
 def patch_client_ritmo(client_id: str, body: ClientRitmoPatch, employee: EmployeeDep):
-    """Which 4 weekdays this client's weekly thread publishes on — purely a
-    scheduling setting, so a plain update instead of the audited RPC."""
+    """Which 4 weekdays (and what time each one) this client's weekly thread
+    publishes on — purely a scheduling setting, so a plain update instead of
+    the audited RPC."""
     db = get_admin_client()
     _client_or_error(db, client_id, employee.agency_id)
-    updated = db.table("clients").update({"publish_days": body.publish_days}).eq(
+    days = [entry.model_dump() for entry in body.publish_days] if body.publish_days else None
+    updated = db.table("clients").update({"publish_days": days}).eq(
         "id", client_id
     ).execute().data
-    return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "publish_days": body.publish_days}
+    return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "publish_days": days}
 
 
 @router.get("/ritmo-default")
 def get_default_ritmo(employee: EmployeeDep):
-    return {"publish_days": list(PUBLISH_DAY_OFFSETS)}
+    settings = get_settings()
+    default_time = f"{settings.publication_hour:02d}:{settings.publication_minute:02d}"
+    return {"publish_days": [{"day": day, "time": default_time} for day in PUBLISH_DAY_OFFSETS]}
 
 
 @router.post("/clientes/{client_id}/probar-prompt")

@@ -144,7 +144,7 @@
     const url = driveUrl(state.client.drive_folder_id);
     if (url) { $('drive-link').href = url; $('drive-link').classList.remove('hidden'); $('qa-drive').href = url; $('qa-drive').classList.remove('hidden'); }
     else { $('drive-link').classList.add('hidden'); $('qa-drive').classList.add('hidden'); }
-    $('prompt-preview').classList.add('hidden'); renderStories(); renderPlan(); renderActivity();
+    $('prompt-preview').classList.add('hidden'); renderStories(); renderPlan(); renderActivity(); loadCalendar();
   }
   function dayLabel(isoDate) {
     return isoDate ? new Intl.DateTimeFormat('es-AR', {weekday:'short', day:'numeric', timeZone:'UTC'}).format(new Date(`${isoDate}T00:00:00Z`)) : '';
@@ -254,31 +254,33 @@
     } catch(error) { if (selectionVersion === state.selectionVersion) { preview.textContent=error.message; preview.classList.add('error'); } }
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) button.disabled=false; }
   }
-  const RITMO_LABELS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
-  let ritmoSelected = new Set();
-  function renderRitmoDays() {
-    $('ritmo-days').innerHTML = RITMO_LABELS.map((label, day) => {
-      const checked = ritmoSelected.has(day), disabled = !checked && ritmoSelected.size >= 4;
-      return `<div class="ritmo-day${checked?' checked':''}${disabled?' disabled':''}" data-day="${day}">${label}</div>`;
+  const CAL_LABELS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+  let calendarDays = []; // [{day, time}], up to 4
+  function renderCalendarDays() {
+    $('calendar-days').innerHTML = CAL_LABELS.map((label, day) => {
+      const entry = calendarDays.find((e) => e.day === day);
+      const checked = !!entry, disabled = !checked && calendarDays.length >= 4;
+      const time = entry ? entry.time : '09:00';
+      return `<div class="cal-row${checked?' checked':''}"><label class="cal-check"><input type="checkbox" data-day="${day}" ${checked?'checked':''} ${disabled?'disabled':''}> ${label}</label><input type="time" data-day="${day}" value="${time}" ${checked?'':'disabled'}></div>`;
     }).join('');
+    $('save-calendar').classList.remove('hidden');
   }
-  async function openRitmo() {
+  async function loadCalendar() {
     let days = state.client?.publish_days;
-    if (!days) { try { days = (await api('/portal/ritmo-default')).publish_days; } catch(_) { days = [0,2,4,6]; } }
-    ritmoSelected = new Set(days);
-    renderRitmoDays();
-    $('ritmo-dialog').showModal();
+    if (!days) { try { days = (await api('/portal/ritmo-default')).publish_days; } catch(_) { days = [{day:0,time:'09:00'},{day:2,time:'09:00'},{day:4,time:'09:00'},{day:6,time:'09:00'}]; } }
+    calendarDays = days.map((d) => ({day: d.day, time: d.time}));
+    renderCalendarDays();
   }
-  async function saveRitmo() {
+  async function saveCalendar() {
     const clientId = state.client?.id, selectionVersion = state.selectionVersion;
-    if (!clientId || ritmoSelected.size !== 4) { showMessage('Elegí exactamente 4 días.', true); return; }
-    $('save-ritmo').disabled = true;
+    if (!clientId || calendarDays.length !== 4) { showMessage('Elegí exactamente 4 días.', true); return; }
+    $('save-calendar').disabled = true;
     try {
-      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/ritmo`, {method:'PATCH', body:JSON.stringify({publish_days:[...ritmoSelected]})});
+      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/ritmo`, {method:'PATCH', body:JSON.stringify({publish_days:calendarDays})});
       if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
-      state.client.publish_days = updated.publish_days; $('ritmo-dialog').close(); showMessage('Ritmo de publicación actualizado.');
+      state.client.publish_days = updated.publish_days; showMessage('Calendario de publicación actualizado.');
     } catch(error) { showMessage(error.message, true); }
-    finally { $('save-ritmo').disabled = false; }
+    finally { $('save-calendar').disabled = false; }
   }
   async function openHistory() {
     const clientId = state.client?.id; if (!clientId) return;
@@ -329,11 +331,19 @@
   $('qa-history').addEventListener('click',openHistory);
   $('close-history').addEventListener('click',()=>$('history-dialog').close());
   $('close-history-2').addEventListener('click',()=>$('history-dialog').close());
-  $('edit-ritmo').addEventListener('click',openRitmo);
-  $('close-ritmo').addEventListener('click',()=>$('ritmo-dialog').close());
-  $('cancel-ritmo').addEventListener('click',()=>$('ritmo-dialog').close());
-  $('save-ritmo').addEventListener('click',saveRitmo);
-  $('ritmo-days').addEventListener('click',(event)=>{const cell=event.target.closest('[data-day]');if(!cell||cell.classList.contains('disabled'))return;const day=Number(cell.dataset.day);if(ritmoSelected.has(day))ritmoSelected.delete(day);else ritmoSelected.add(day);renderRitmoDays();});
+  $('save-calendar').addEventListener('click',saveCalendar);
+  $('calendar-days').addEventListener('change',(event)=>{
+    const day = Number(event.target.dataset.day);
+    if (Number.isNaN(day)) return;
+    if (event.target.type === 'checkbox') {
+      if (event.target.checked) { if (calendarDays.length < 4) calendarDays.push({day, time:'09:00'}); calendarDays.sort((a,b)=>a.day-b.day); }
+      else calendarDays = calendarDays.filter((e)=>e.day!==day);
+      renderCalendarDays();
+    } else if (event.target.type === 'time') {
+      const entry = calendarDays.find((e)=>e.day===day);
+      if (entry) entry.time = event.target.value;
+    }
+  });
   $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); setFieldMode('description',true); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
   $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
   $('plan-days').addEventListener('click',(event)=>{const card=event.target.closest('[data-story-id]');if(!card)return;const found=findStory(card.dataset.storyId);if(found)showPlanPreview(found.story);});
