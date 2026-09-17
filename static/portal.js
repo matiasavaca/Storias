@@ -29,6 +29,7 @@
       const [me, teams] = await Promise.all([api('/portal/me'), api('/portal/equipos')]);
       state.me = me; state.teams = teams;
       $('client-team').innerHTML = '<option value="">Sin equipo</option>' + teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join('');
+      $('me-avatar').textContent = initials(me.name || me.email); $('me-name').textContent = me.name || me.email; $('me').classList.remove('hidden');
     } catch (error) { /* non-fatal: the sidebar just falls back to a flat, ungrouped list */ }
   }
   function teamName(teamId) { const team = state.teams.find((item) => item.id === teamId); return team ? team.name : 'Sin equipo'; }
