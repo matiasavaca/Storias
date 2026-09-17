@@ -68,6 +68,12 @@ def list_images(drive_folder_id: str) -> list[tuple[str, str, bytes]]:
     return images
 
 
+def count_images(drive_folder_id: str) -> int:
+    """Metadata-only count of images in the folder — no bytes downloaded."""
+    _, metadata = _image_files(drive_folder_id)
+    return len(metadata)
+
+
 def first_image(drive_folder_id: str) -> tuple[str, str, bytes] | None:
     """Return the first readable image, downloading bytes only until one decodes."""
     files, metadata = _image_files(drive_folder_id)

@@ -1,8 +1,9 @@
 (() => {
   'use strict';
-  const state = { clients: [], client: null, groups: [], editingStory: null, selectedClientId: null, selectionVersion: 0, clientListVersion: 0, teams: [], me: null };
+  const state = { clients: [], client: null, groups: [], driveCount: undefined, editingStory: null, selectedClientId: null, selectionVersion: 0, clientListVersion: 0, teams: [], me: null };
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[char]);
+  function avatarColor(id) { let hash = 0; for (const ch of String(id)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0; return hash % 6; }
 
   async function api(path, options = {}) {
     const response = await fetch(path, {credentials: 'same-origin', headers: {'Content-Type':'application/json', ...(options.headers || {})}, ...options});
@@ -84,7 +85,12 @@
       return teamName(a).localeCompare(teamName(b), 'es');
     });
     $('client-list').innerHTML = keys.map((key) => {
-      const cards = byTeam.get(key).map((client) => `<button class="client-item${state.client?.id === client.id ? ' active' : ''}" data-client-id="${escapeHtml(client.id)}"><span class="avatar">${escapeHtml(initials(client.name))}</span><span class="meta"><span class="name">${escapeHtml(client.name)}</span></span></button>`).join('');
+      const cards = byTeam.get(key).map((client) => {
+        const active = state.client?.id === client.id;
+        const count = client.stories_count ?? 0;
+        const countLabel = `${count} historia${count === 1 ? '' : 's'}${active ? ' · Esta semana' : ''}`;
+        return `<button class="client-item${active ? ' active' : ''}" data-client-id="${escapeHtml(client.id)}"><span class="avatar avatar-${avatarColor(client.id)}">${escapeHtml(initials(client.name))}</span><span class="meta"><span class="name">${escapeHtml(client.name)}</span><span class="count">${escapeHtml(countLabel)}</span></span></button>`;
+      }).join('');
       return `<div class="team-group"><h4 class="team-label">${escapeHtml(key ? teamName(key) : 'Sin equipo')}</h4>${cards}</div>`;
     }).join('');
   }
@@ -96,10 +102,15 @@
     $('header-default').classList.add('hidden'); $('header-client').classList.remove('hidden');
     $('client-name').textContent = 'Cargando...'; $('stories').textContent = 'Cargando...'; $('week-badge').classList.add('hidden');
     $('activity-list').innerHTML = ''; $('activity-summary').innerHTML = ''; $('header-tags').innerHTML = ''; $('drive-link').classList.add('hidden');
+    $('plan-panel').classList.add('hidden'); state.driveCount = undefined;
     try {
-      const [client, groups] = await Promise.all([api(`/portal/clientes/${encodeURIComponent(clientId)}`), api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`)]);
+      const [client, groups, driveInfo] = await Promise.all([
+        api(`/portal/clientes/${encodeURIComponent(clientId)}`),
+        api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`),
+        api(`/portal/clientes/${encodeURIComponent(clientId)}/drive-info`).catch(() => ({count: null})),
+      ]);
       if (selectionVersion !== state.selectionVersion || clientId !== state.selectedClientId) return;
-      state.client = client; state.groups = groups;
+      state.client = client; state.groups = groups; state.driveCount = driveInfo?.count ?? null;
       renderClients(); renderClient();
     } catch (error) {
       if (selectionVersion === state.selectionVersion) {
@@ -120,20 +131,43 @@
     const url = driveUrl(state.client.drive_folder_id);
     if (url) { $('drive-link').href = url; $('drive-link').classList.remove('hidden'); $('qa-drive').href = url; $('qa-drive').classList.remove('hidden'); }
     else { $('drive-link').classList.add('hidden'); $('qa-drive').classList.add('hidden'); }
-    $('prompt-preview').classList.add('hidden'); renderStories(); renderActivity();
+    $('prompt-preview').classList.add('hidden'); renderStories(); renderPlan(); renderActivity();
+  }
+  function dayLabel(isoDate) {
+    return isoDate ? new Intl.DateTimeFormat('es-AR', {weekday:'short', day:'numeric', timeZone:'UTC'}).format(new Date(`${isoDate}T00:00:00Z`)) : '';
+  }
+  function renderPlan() {
+    const next = state.groups[0];
+    const stories = next ? [...(next.stories || [])] : [];
+    const dated = stories.filter((story) => story.fecha_publicacion)
+      .sort((a,b) => a.fecha_publicacion.localeCompare(b.fecha_publicacion));
+    if (dated.length < 2) { $('plan-panel').classList.add('hidden'); return; }
+    const first = dated[0].fecha_publicacion, last = dated[dated.length - 1].fecha_publicacion;
+    $('plan-range').textContent = `${dayLabel(first)} – ${dayLabel(last)}`;
+    $('plan-days').innerHTML = dated.map((story) => {
+      const title = story.text.length > 60 ? story.text.slice(0, 57) + '…' : story.text;
+      return `<div class="plan-day" data-story-id="${escapeHtml(story.id)}"><span class="grip">⠿</span><span class="thumb">📝</span><div><div class="date">${escapeHtml(dayLabel(story.fecha_publicacion))}</div><div class="time">${next.scheduled_time ? next.scheduled_time.slice(0,5) + 'hs' : ''}</div><div class="title">${escapeHtml(title)}</div><div class="type">Story única</div></div></div>`;
+    }).join('');
+    $('plan-panel').classList.remove('hidden');
   }
   function groupDate(group) {
     const raw = group.scheduled_date || group.generation_week;
     return raw ? new Intl.DateTimeFormat('es-AR', {dateStyle:'long', timeZone:'UTC'}).format(new Date(`${raw}T00:00:00Z`)) : 'Sin fecha';
   }
+  function groupRangeLabel(group) {
+    const dates = (group.stories || []).map((s) => s.fecha_publicacion).filter(Boolean).sort();
+    if (!dates.length) return groupDate(group);
+    const first = dayLabel(dates[0]), last = dayLabel(dates[dates.length - 1]);
+    return first === last ? first : `${first} – ${last}`;
+  }
   function renderStories() {
     if (!state.groups.length) { $('stories').innerHTML = '<div class="empty">No hay historias próximas para este cliente.</div>'; $('week-badge').classList.add('hidden'); return; }
     const next = state.groups[0];
-    if (next.scheduled_date) { $('week-badge').textContent = `${groupDate(next)}${next.scheduled_time ? ' · ' + next.scheduled_time.slice(0,5) + 'hs' : ''}`; $('week-badge').classList.remove('hidden'); }
+    if (next.scheduled_date) { $('week-badge').textContent = `${groupRangeLabel(next)}${next.scheduled_time ? ' · ' + next.scheduled_time.slice(0,5) + 'hs' : ''}`; $('week-badge').classList.remove('hidden'); }
     else $('week-badge').classList.add('hidden');
     $('stories').innerHTML = state.groups.map((group) => {
       const stories = [...(group.stories || [])].sort((a,b) => a.order - b.order);
-      return `<section class="group" data-group-id="${escapeHtml(group.id)}"><div class="group-head"><h3>${escapeHtml(groupDate(group))}</h3><span class="badge">${escapeHtml(group.status || 'pending')}</span></div><div class="stories">${stories.map((story,index) => storyCard(story,index,stories.length)).join('')}</div></section>`;
+      return `<section class="group" data-group-id="${escapeHtml(group.id)}"><div class="group-head"><h3>${escapeHtml(groupRangeLabel(group))}</h3><span class="badge">${escapeHtml(group.status || 'pending')}</span></div><div class="stories">${stories.map((story,index) => storyCard(story,index,stories.length)).join('')}</div></section>`;
     }).join('');
   }
   function renderActivity() {
@@ -142,17 +176,21 @@
     const rows = [];
     if (next) {
       rows.push(`<div class="activity-item"><span class="dot">✓</span><div><div>${activeCount} historia${activeCount===1?'':'s'} lista${activeCount===1?'':'s'}</div><div class="sub">Generadas con la dirección actual</div></div></div>`);
-      rows.push(`<div class="activity-item"><span class="dot">📅</span><div><div>Próxima publicación: ${escapeHtml(groupDate(next))}${next.scheduled_time ? ' · ' + next.scheduled_time.slice(0,5) + 'hs' : ''}</div><div class="sub">Según el plan generado</div></div></div>`);
     } else {
       rows.push(`<div class="activity-item"><span class="dot">–</span><div><div>Sin historias programadas</div><div class="sub">Todavía no se generó contenido para este cliente</div></div></div>`);
     }
+    if (state.driveCount !== null && state.driveCount !== undefined) {
+      rows.push(`<div class="activity-item"><span class="dot">📁</span><div><div>${state.driveCount} imagen${state.driveCount===1?'':'es'} disponible${state.driveCount===1?'':'s'} en Drive</div><div class="sub">De la carpeta del cliente</div></div></div>`);
+    }
+    if (next) rows.push(`<div class="activity-item"><span class="dot">📅</span><div><div>Próxima publicación: ${escapeHtml(groupDate(next))}${next.scheduled_time ? ' · ' + next.scheduled_time.slice(0,5) + 'hs' : ''}</div><div class="sub">Según el plan generado</div></div></div>`);
     $('activity-list').innerHTML = rows.join('');
     $('activity-summary').innerHTML = state.client.generation_error
       ? `<div class="status-card warn"><span>⚠️</span><div><strong>Necesita atención</strong><p>${escapeHtml(state.client.generation_error)}</p></div></div>`
       : `<div class="status-card ok"><span>✓</span><div><strong>Todo en orden</strong><p>No hay errores de generación pendientes.</p></div></div>`;
   }
   function storyCard(story, index, total) {
-    return `<article class="story" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span><div class="story-actions"><button class="icon-btn" data-action="move-left" ${index===0?'disabled':''} aria-label="Mover a la izquierda">←</button><button class="icon-btn" data-action="move-right" ${index===total-1?'disabled':''} aria-label="Mover a la derecha">→</button><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text)}</p></div></article>`;
+    const dateBadge = story.fecha_publicacion ? `<span class="story-date">${escapeHtml(dayLabel(story.fecha_publicacion))}</span>` : '';
+    return `<article class="story" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span>${dateBadge}<div class="story-actions"><button class="icon-btn" data-action="move-left" ${index===0?'disabled':''} aria-label="Mover a la izquierda">←</button><button class="icon-btn" data-action="move-right" ${index===total-1?'disabled':''} aria-label="Mover a la derecha">→</button><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text)}</p></div></article>`;
   }
   async function saveClientField(field, buttonId) {
     const button=$(buttonId), input=$(field==='business_description'?'business-description':'weekly-focus'), value=input.value.trim(), clientId=state.client?.id, selectionVersion=state.selectionVersion;
@@ -200,7 +238,7 @@
     try {
       const updated=await api(`/portal/historias/${encodeURIComponent(story.id)}`, {method:'PATCH', body:JSON.stringify({texto_nuevo:textoNuevo})});
       if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id || story !== state.editingStory) return;
-      Object.assign(story,updated); $('story-dialog').close(); renderStories(); showMessage('Historia actualizada.');
+      Object.assign(story,updated); $('story-dialog').close(); renderStories(); renderPlan(); showMessage('Historia actualizada.');
     } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
     finally { if (selectionVersion === state.selectionVersion) button.disabled=false; }
   }
@@ -208,12 +246,12 @@
     const clientId=state.client?.id, selectionVersion=state.selectionVersion, stories=[...group.stories].sort((a,b)=>a.order-b.order), index=stories.findIndex((item)=>item.id===story.id), target=index+direction; if(!clientId||target<0||target>=stories.length)return;
     [stories[index],stories[target]]=[stories[target],stories[index]];
     const historias=stories.map((item,position)=>({story_id:item.id,nuevo_order:position+1}));
-    try { await api('/portal/historias/reordenar',{method:'PATCH',body:JSON.stringify({historias})}); if(selectionVersion!==state.selectionVersion||clientId!==state.client?.id)return; stories.forEach((item,position)=>{item.order=position+1;}); group.stories=stories; renderStories(); showMessage('Orden actualizado.'); }
+    try { await api('/portal/historias/reordenar',{method:'PATCH',body:JSON.stringify({historias})}); if(selectionVersion!==state.selectionVersion||clientId!==state.client?.id)return; stories.forEach((item,position)=>{item.order=position+1;}); group.stories=stories; renderStories(); renderPlan(); showMessage('Orden actualizado.'); }
     catch(error) { if (selectionVersion===state.selectionVersion&&!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
   }
   async function deleteStory(group, story) {
     const clientId=state.client?.id, selectionVersion=state.selectionVersion; if(!clientId||!window.confirm('¿Cancelar esta historia?'))return;
-    try { await api(`/portal/historias/${encodeURIComponent(story.id)}`,{method:'DELETE'}); if(selectionVersion!==state.selectionVersion||clientId!==state.client?.id)return; group.stories=group.stories.filter((item)=>item.id!==story.id); renderStories(); renderActivity(); showMessage('Historia cancelada.'); }
+    try { await api(`/portal/historias/${encodeURIComponent(story.id)}`,{method:'DELETE'}); if(selectionVersion!==state.selectionVersion||clientId!==state.client?.id)return; group.stories=group.stories.filter((item)=>item.id!==story.id); renderStories(); renderPlan(); renderActivity(); showMessage('Historia cancelada.'); }
     catch(error) { if (selectionVersion===state.selectionVersion&&!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
   }
   $('client-list').addEventListener('click',(event)=>{const item=event.target.closest('[data-client-id]');if(item)selectClient(item.dataset.clientId);});
@@ -231,6 +269,7 @@
   $('close-history-2').addEventListener('click',()=>$('history-dialog').close());
   $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
   $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
+  $('plan-days').addEventListener('click',(event)=>{const card=event.target.closest('[data-story-id]');if(!card)return;const found=findStory(card.dataset.storyId);if(found)openStory(found.story);});
   $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close());
   loadMeAndTeams().finally(loadClients);
 })();

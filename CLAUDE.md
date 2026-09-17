@@ -153,3 +153,16 @@ def publicar_historia(image_url: str, instagram_account_id: str, meta_access_tok
 - Worktree/rama separada por zona: `app/engine/**` es de Claude/Gonza, todo lo demás de Codex/Matías.
 - PRs chicos. Cross-review recomendado: Codex revisa los PRs que tocan `app/engine`, y viceversa con lo que arme Codex — dos modelos revisando atrapan más que uno solo mirando su propio trabajo.
 - Cualquier cambio de firma/tabla de este documento se negocia y se actualiza acá ANTES de escribir el código, no al revés.
+
+## 7. Extensión del portal — Bloque A2
+
+- La base existente usa `clients.active` y `clients.name`: el portal filtra `active = true` y mapea `name` a `ClientContentConfig.nombre_negocio`.
+- `clients.generation_error` (text nullable) y `generation_error_at` (timestamptz nullable) exponen el último error de generación para B3; una generación persistida los limpia.
+- `story_groups.status` admite también `pending`. `generation_week` (date nullable) identifica la semana generada; es única por cliente cuando está cargada, sin afectar grupos manuales.
+- `stories` agrega `image_original_url` (text nullable), `fecha_publicacion` (date nullable), `estado` (text nullable: `pendiente`, `publicando`, `publicado`, `error`, `cancelada`), `error` (text nullable), `agregar_cta` (boolean default false) y `published_at` (timestamptz nullable). `cancelada` implementa el borrado blando desde el portal. Las filas anteriores conservan estado nulo y siguen el flujo existente.
+- El hilo semanal tiene cuatro historias en orden 1–4, cada una con su propio `fecha_publicacion` repartido en la semana siguiente a la generación (lunes/miércoles/viernes/domingo — `PUBLISH_DAY_OFFSETS` en `content_jobs.py`), no las cuatro el mismo día. `story_groups.scheduled_date` guarda el primer día (el lunes) solo para agrupar/ordenar por semana. La publicación diaria corre a las 09:00 por defecto, configurable por entorno; todos los horarios usan America/Argentina/Buenos_Aires.
+- La RPC `persist_generated_thread` (solo service_role) guarda grupo, cuatro historias y uso de imágenes en una transacción. Incrementa `times_used` atómicamente y limpia el foco solo si aún coincide con el texto y vencimiento utilizados; no consume un foco reemplazado durante la generación.
+- `publicando` es un reclamo atómico antes de llamar a Meta, para evitar publicaciones duplicadas por workers concurrentes. Los errores no se reintentan automáticamente; un reclamo interrumpido requiere revisión manual antes de volver a pendiente.
+- A2 toma las primeras cuatro imágenes de Drive. La lectura del historial y el filtro de no-repetición quedan para A3.
+- El portal reordena historias mediante la RPC backend-only `reorder_stories`, que difiere la unicidad `(story_group_id, order)` durante el intercambio y valida que todas las filas pertenezcan al mismo grupo.
+- El portal actualiza campos de prompt mediante la RPC backend-only `update_client_prompt`, que valida empleado y cliente contra la agencia esperada y guarda la actualización junto con sus filas de `prompt_history` en una única transacción.

@@ -119,6 +119,9 @@ def test_weekly_continues_after_insufficient_images_and_saves_complete_thread(ge
     assert saved["p_stories"][0]["image_url"] == "edited-0"
     assert saved["p_stories"][3]["agregar_cta"] is True
     assert saved["p_images"][0] == {"drive_file_id": "file-0", "drive_file_name": "image-0.jpg"}
+    # Spread across the week (Mon/Wed/Fri/Sun) instead of all four sharing p_scheduled_date.
+    assert [s["fecha_publicacion"] for s in saved["p_stories"]] == [
+        "2026-09-21", "2026-09-23", "2026-09-25", "2026-09-27"]
 
 
 def test_engine_error_does_not_stop_next_client_or_consume_focus(generation):

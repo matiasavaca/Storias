@@ -143,20 +143,50 @@ def test_patch_client_team_can_unassign(monkeypatch, client):
     assert db.updates == [("clients", {"team_id": None}, [("id", "c1")])]
 
 
+def test_drive_info_reports_image_count(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1", "drive_folder_id": "folder-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.drive.count_images", lambda folder_id: 42 if folder_id == "folder-1" else 0)
+    response = client.get("/portal/clientes/c1/drive-info")
+    assert response.status_code == 200
+    assert response.json() == {"count": 42}
+
+
+def test_drive_info_is_null_without_a_folder(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1", "drive_folder_id": None}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.get("/portal/clientes/c1/drive-info")
+    assert response.status_code == 200
+    assert response.json() == {"count": None}
+
+
+def test_drive_info_is_null_on_drive_failure(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1", "drive_folder_id": "folder-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    def boom(folder_id): raise ValueError("no service account")
+    monkeypatch.setattr("app.routers.portal.drive.count_images", boom)
+    response = client.get("/portal/clientes/c1/drive-info")
+    assert response.status_code == 200
+    assert response.json() == {"count": None}
+
+
 def test_list_clients_defaults_to_entire_agency(monkeypatch, client):
-    db = DB([[{"id": "c1", "agency_id": "agency-1"}, {"id": "c2", "agency_id": "agency-1"}]])
+    db = DB([[{"id": "c1", "agency_id": "agency-1"}, {"id": "c2", "agency_id": "agency-1"}],
+              [{"client_id": "c1"}, {"client_id": "c1"}]])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
     response = client.get("/portal/clientes")
     assert response.status_code == 200
-    assert [row["id"] for row in response.json()] == ["c1", "c2"]
+    rows = response.json()
+    assert [row["id"] for row in rows] == ["c1", "c2"]
+    assert [row["stories_count"] for row in rows] == [2, 0]
 
 
 def test_list_clients_can_filter_to_employee_assignments(monkeypatch, client):
-    db = DB([[{"client_id": "c2"}], [{"id": "c2", "agency_id": "agency-1"}]])
+    db = DB([[{"client_id": "c2"}], [{"id": "c2", "agency_id": "agency-1"}], []])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
     response = client.get("/portal/clientes?solo_mios=true")
     assert response.status_code == 200
-    assert response.json() == [{"id": "c2", "agency_id": "agency-1"}]
+    assert response.json() == [{"id": "c2", "agency_id": "agency-1", "stories_count": 0}]
 
 
 def test_missing_client_is_404_not_a_crash_when_postgrest_returns_none(monkeypatch, client):

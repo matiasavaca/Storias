@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 TIMEZONE = "America/Argentina/Buenos_Aires"
 # Global cooldown for image reuse. This may become a per-client setting later.
 NO_REPEAT_WEEKS = 3
+# Days after the target week's Monday each of the 4 weekly stories publishes
+# on: Mon/Wed/Fri/Sun, spreading the thread across the week instead of
+# dumping all 4 the same day.
+PUBLISH_DAY_OFFSETS = (0, 2, 4, 6)
 
 
 def local_today() -> date:
@@ -53,16 +57,19 @@ def _thread_payload(row: dict, config: ClientContentConfig, result: HiloGenerado
     if len(set(result.drive_file_ids_usados)) != 4 or set(result.drive_file_ids_usados) != set(names):
         raise ValueError("Engine returned unexpected Drive image IDs")
     monday = today - timedelta(days=today.weekday())
+    next_monday = monday + timedelta(days=7)
+    publish_dates = [next_monday + timedelta(days=offset) for offset in PUBLISH_DAY_OFFSETS]
     settings = get_settings()
     return {
         "p_client_id": config.client_id,
         "p_generation_week": monday.isoformat(),
-        "p_scheduled_date": (monday + timedelta(days=7)).isoformat(),
+        "p_scheduled_date": next_monday.isoformat(),
         "p_scheduled_time": f"{settings.publication_hour:02d}:{settings.publication_minute:02d}:00",
         "p_used_focus": config.weekly_focus,
         "p_used_focus_expires_at": row.get("weekly_focus_expires_at"),
         "p_stories": [{"text": result.historias[i], "image_url": result.imagenes_editadas_url[i],
             "image_original_url": result.imagenes_originales_url[i],
+            "fecha_publicacion": publish_dates[i].isoformat(),
             # Read what the engine actually drew on the image (result.cta_agregado),
             # don't re-roll the dice here: a second independent draw could disagree
             # with the composed image and persist a flag that doesn't match it.

@@ -114,12 +114,40 @@ def list_clients(employee: EmployeeDep, solo_mios: bool = False):
         if not client_ids:
             return []
         query = query.in_("id", client_ids)
-    return query.order("name").execute().data or []
+    clients = query.order("name").execute().data or []
+    if clients:
+        ids = [c["id"] for c in clients]
+        rows = db.table("stories").select("client_id").in_("client_id", ids).neq(
+            "estado", "cancelada"
+        ).gte("fecha_publicacion", date.today().isoformat()).execute().data or []
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row["client_id"]] = counts.get(row["client_id"], 0) + 1
+        for c in clients:
+            c["stories_count"] = counts.get(c["id"], 0)
+    return clients
 
 
 @router.get("/clientes/{client_id}")
 def get_client(client_id: str, employee: EmployeeDep):
     return _client_or_error(get_admin_client(), client_id, employee.agency_id)
+
+
+@router.get("/clientes/{client_id}/drive-info")
+def get_drive_info(client_id: str, employee: EmployeeDep):
+    """Metadata-only count of images in the client's Drive folder.
+
+    Best-effort: Drive access needs a service account file that isn't
+    always configured in every environment, so failures return count=None
+    instead of a 500 — this is informational, not a required feature."""
+    client = _client_or_error(get_admin_client(), client_id, employee.agency_id)
+    folder_id = client.get("drive_folder_id")
+    if not folder_id:
+        return {"count": None}
+    try:
+        return {"count": drive.count_images(folder_id)}
+    except Exception:
+        return {"count": None}
 
 
 @router.patch("/clientes/{client_id}")
