@@ -255,21 +255,42 @@
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) button.disabled=false; }
   }
   const CAL_LABELS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
-  let calendarDays = []; // [{day, time}], up to 4
-  function renderCalendarDays() {
-    $('calendar-days').innerHTML = CAL_LABELS.map((label, day) => {
-      const entry = calendarDays.find((e) => e.day === day);
-      const checked = !!entry, disabled = !checked && calendarDays.length >= 4;
-      const time = entry ? entry.time : '09:00';
-      return `<div class="cal-row${checked?' checked':''}"><label class="cal-check"><input type="checkbox" data-day="${day}" ${checked?'checked':''} ${disabled?'disabled':''}> ${label}</label><input type="time" data-day="${day}" value="${time}" ${checked?'':'disabled'}></div>`;
+  let calendarDays = []; // [{day, time}], up to 4 — weekdays that repeat every week
+  let calMonthOffset = 0;
+  function monthBase() { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + calMonthOffset); return d; }
+  function renderCalendarMonth() {
+    const base = monthBase(), year = base.getFullYear(), month = base.getMonth();
+    const monthLabel = base.toLocaleDateString('es-AR', {month:'long', year:'numeric'});
+    $('cal-month-label').textContent = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+    const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7; // Monday = 0
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const cells = Array(firstWeekday).fill(null).concat(Array.from({length: daysInMonth}, (_, i) => i + 1));
+    while (cells.length % 7 !== 0) cells.push(null);
+    const activeDays = new Set(calendarDays.map((e) => e.day));
+    const contentDates = new Set();
+    for (const group of state.groups) for (const story of (group.stories || [])) if (story.fecha_publicacion) contentDates.add(story.fecha_publicacion);
+    $('calendar-grid').innerHTML = cells.map((day) => {
+      if (day === null) return '<div class="cal-cell outside"></div>';
+      const weekday = (new Date(year, month, day).getDay() + 6) % 7;
+      const iso = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      const active = activeDays.has(weekday), hasContent = contentDates.has(iso);
+      return `<div class="cal-cell${active?' active-day':''}" data-weekday="${weekday}">${day}${hasContent?'<span class="dot"></span>':''}</div>`;
     }).join('');
+    renderCalendarLegend();
+  }
+  function renderCalendarLegend() {
+    const sorted = [...calendarDays].sort((a,b) => a.day - b.day);
+    $('calendar-legend').innerHTML = sorted.length ? sorted.map((entry) =>
+      `<div class="legend-row"><span>${CAL_LABELS[entry.day]}</span><input type="time" data-day="${entry.day}" value="${entry.time}"></div>`
+    ).join('') : '<p class="hint">Clickeá hasta 4 días en el calendario de arriba.</p>';
     $('save-calendar').classList.remove('hidden');
   }
   async function loadCalendar() {
+    calMonthOffset = 0;
     let days = state.client?.publish_days;
     if (!days) { try { days = (await api('/portal/ritmo-default')).publish_days; } catch(_) { days = [{day:0,time:'09:00'},{day:2,time:'09:00'},{day:4,time:'09:00'},{day:6,time:'09:00'}]; } }
     calendarDays = days.map((d) => ({day: d.day, time: d.time}));
-    renderCalendarDays();
+    renderCalendarMonth();
   }
   async function saveCalendar() {
     const clientId = state.client?.id, selectionVersion = state.selectionVersion;
@@ -332,17 +353,20 @@
   $('close-history').addEventListener('click',()=>$('history-dialog').close());
   $('close-history-2').addEventListener('click',()=>$('history-dialog').close());
   $('save-calendar').addEventListener('click',saveCalendar);
-  $('calendar-days').addEventListener('change',(event)=>{
+  $('cal-prev').addEventListener('click',()=>{calMonthOffset--; renderCalendarMonth();});
+  $('cal-next').addEventListener('click',()=>{calMonthOffset++; renderCalendarMonth();});
+  $('calendar-grid').addEventListener('click',(event)=>{
+    const cell = event.target.closest('[data-weekday]'); if (!cell) return;
+    const day = Number(cell.dataset.weekday);
+    const idx = calendarDays.findIndex((e)=>e.day===day);
+    if (idx >= 0) calendarDays.splice(idx, 1);
+    else { if (calendarDays.length >= 4) { showMessage('Ya elegiste 4 días — sacá uno para agregar otro.', true); return; } calendarDays.push({day, time:'09:00'}); }
+    renderCalendarMonth();
+  });
+  $('calendar-legend').addEventListener('change',(event)=>{
     const day = Number(event.target.dataset.day);
-    if (Number.isNaN(day)) return;
-    if (event.target.type === 'checkbox') {
-      if (event.target.checked) { if (calendarDays.length < 4) calendarDays.push({day, time:'09:00'}); calendarDays.sort((a,b)=>a.day-b.day); }
-      else calendarDays = calendarDays.filter((e)=>e.day!==day);
-      renderCalendarDays();
-    } else if (event.target.type === 'time') {
-      const entry = calendarDays.find((e)=>e.day===day);
-      if (entry) entry.time = event.target.value;
-    }
+    const entry = calendarDays.find((e)=>e.day===day);
+    if (entry) entry.time = event.target.value;
   });
   $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); setFieldMode('description',true); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
   $('stories').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);});
