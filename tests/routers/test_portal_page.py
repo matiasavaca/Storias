@@ -49,3 +49,21 @@ def test_portal_frontend_uses_real_api_without_prototype_data():
     assert "CUAN Arquitectura" not in source
     assert "Panadería Dora" not in source
     assert "images.unsplash.com" not in source
+
+
+def test_static_assets_are_never_cached_in_development():
+    # portal.js/portal.html change every few minutes during dev and are
+    # served fresh from disk under the same URL every time — without this,
+    # a browser can keep running a stale cached copy after an edit.
+    response = TestClient(app).get("/static/portal.js")
+
+    assert response.headers.get("cache-control") == "no-store"
+
+
+def test_engine_fonts_are_served_read_only_for_the_font_previews():
+    # Same files app.engine.imaging composes with server-side, exposed
+    # so the portal's typography pickers can preview each option live.
+    response = TestClient(app).get("/fonts/Raleway%5Bwght%5D.ttf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] in ("font/ttf", "application/font-sfnt", "application/octet-stream")

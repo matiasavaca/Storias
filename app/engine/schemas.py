@@ -17,6 +17,7 @@ class ClientContentConfig(BaseModel):
     logo_url: str | None = None
     calendly_link: str | None = None
     prob_link: float = 0.0
+    font_choice: str | None = None      # key de imaging.FONT_CHOICES; None = fuente default del motor
 
 
 class ImagenCandidata(BaseModel):

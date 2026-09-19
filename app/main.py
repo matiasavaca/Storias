@@ -88,6 +88,12 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     if s.is_production:
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    elif request.url.path.startswith("/static/"):
+        # In dev, portal.js/portal.html-adjacent assets change every few
+        # minutes and are served fresh from disk with no cache-busted
+        # filename — without this, browsers keep running a stale cached
+        # copy after an edit and "nothing changed" even though it did.
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -100,6 +106,13 @@ app.include_router(portal.router)
 # Same-origin assets let the portal API receive the HTTP-only session cookie.
 _STATIC_DIR = Path(__file__).parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+# Read-only exposure of the engine's bundled .ttf files so the portal can
+# render each typography choice in its own font before an employee picks it.
+# Serves the same files app.engine.imaging already uses server-side — this
+# mount adds no new files and changes no engine behavior.
+_ENGINE_FONTS_DIR = Path(__file__).parent / "engine" / "assets"
+app.mount("/fonts", StaticFiles(directory=str(_ENGINE_FONTS_DIR)), name="engine-fonts")
 
 
 # ── Páginas principales ───────────────────────────────────────────────────────

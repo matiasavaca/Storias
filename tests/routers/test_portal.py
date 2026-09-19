@@ -153,6 +153,41 @@ def test_default_ritmo_reports_global_offsets(client):
         {"day": 4, "time": "09:00"}, {"day": 6, "time": "09:00"}]}
 
 
+def test_list_font_choices_reports_all_bundled_fonts(client):
+    from app.engine.imaging import _FONT_FILES, FONT_CHOICES
+    response = client.get("/portal/tipografias")
+    assert response.status_code == 200
+    assert response.json() == [
+        {"key": k, "label": v, "file": _FONT_FILES[k]} for k, v in FONT_CHOICES.items()
+    ]
+    assert len(response.json()) == 20
+
+
+def test_patch_client_font_saves_choice(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "c1", "font_choice": "poppins"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/tipografia", json={"font_choice": "poppins"})
+    assert response.status_code == 200
+    assert response.json()["font_choice"] == "poppins"
+    assert db.updates == [("clients", {"font_choice": "poppins"}, [("id", "c1")])]
+
+
+def test_patch_client_font_allows_clearing_to_null(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "c1", "font_choice": None}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/tipografia", json={"font_choice": None})
+    assert response.status_code == 200
+    assert db.updates == [("clients", {"font_choice": None}, [("id", "c1")])]
+
+
+def test_patch_client_font_rejects_unknown_key(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/tipografia", json={"font_choice": "comic-sans"})
+    assert response.status_code == 422
+    assert db.updates == []
+
+
 def test_create_manual_story_creates_group_and_first_story(monkeypatch, client):
     db = DB([{"id": "c1", "agency_id": "agency-1"}, [], [{"id": "g1"}], [{"id": "s1", "order": 1}]])
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
@@ -168,6 +203,23 @@ def test_create_manual_story_creates_group_and_first_story(monkeypatch, client):
     assert story_insert["image_url"] == "https://cdn/img.jpg" and story_insert["order"] == 1
     assert story_insert["fecha_publicacion"] == "2026-09-25" and story_insert["hora_publicacion"] == "10:00:00"
     assert story_insert["aprobado"] is False
+
+
+def test_create_manual_story_starts_a_fresh_group_when_the_existing_one_is_agendado(monkeypatch, client):
+    # The group lookup filters on agendado = False, so an already-scheduled
+    # group for that date never matches — a brand new group is created
+    # instead of silently reopening a confirmed one.
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [], [{"id": "g2"}], [{"id": "s1", "order": 1}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.uploads.upload_image", lambda data, client_id, tag: "https://cdn/img.jpg")
+    response = client.post("/portal/clientes/c1/historias/manual",
+        data={"fecha_publicacion": "2026-09-21", "hora_publicacion": "10:00"},
+        files={"image": ("photo.jpg", b"fake-bytes", "image/jpeg")})
+    assert response.status_code == 200
+    group_insert = next(p for t, p in db.inserts if t == "story_groups")
+    assert group_insert["scheduled_date"] == "2026-09-21"
+    story_insert = next(p for t, p in db.inserts if t == "stories")
+    assert story_insert["story_group_id"] == "g2" and story_insert["order"] == 1
 
 
 def test_create_manual_story_adds_to_existing_manual_group_on_same_date(monkeypatch, client):
@@ -263,6 +315,88 @@ def test_update_manual_day_time_requires_existing_manual_group(monkeypatch, clie
     response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/hora",
         json={"hora_publicacion": "14:30"})
     assert response.status_code == 404
+
+
+def test_update_manual_day_description_saves_note(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "g1"}],
+              [{"id": "g1", "descripcion": "Proceso creativo"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/descripcion",
+        json={"descripcion": "Proceso creativo"})
+    assert response.status_code == 200
+    assert response.json()["descripcion"] == "Proceso creativo"
+    assert db.updates == [("story_groups", {"descripcion": "Proceso creativo"}, [("id", "g1")])]
+
+
+def test_update_manual_day_description_clears_with_null(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, [{"id": "g1"}],
+              [{"id": "g1", "descripcion": None}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/descripcion",
+        json={"descripcion": ""})
+    assert response.status_code == 200
+    assert db.updates == [("story_groups", {"descripcion": None}, [("id", "g1")])]
+
+
+def test_update_manual_day_description_requires_existing_manual_group(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, []])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/historias/manual/2026-09-25/descripcion",
+        json={"descripcion": "algo"})
+    assert response.status_code == 404
+
+
+def test_schedule_day_succeeds_when_all_approved(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"},
+              [{"id": "s1", "estado": "pendiente", "aprobado": True, "story_group_id": "g1"},
+               {"id": "s2", "estado": "pendiente", "aprobado": True, "story_group_id": "g1"}],
+              None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/dias/2026-09-25/agendar")
+    assert response.status_code == 200
+    assert response.json() == {"detail": "Publicación agendada"}
+    assert db.updates == [("story_groups", {"agendado": True}, [("id", "g1")])]
+
+
+def test_schedule_day_bundles_every_group_sharing_that_date(monkeypatch, client):
+    # A day can be published from an AI batch's story and a manual upload's
+    # story at once — both groups must get agendado, it's one publication.
+    db = DB([{"id": "c1", "agency_id": "agency-1"},
+              [{"id": "s1", "estado": "pendiente", "aprobado": True, "story_group_id": "ai-group"},
+               {"id": "s2", "estado": "pendiente", "aprobado": True, "story_group_id": "manual-group"}],
+              None, None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/dias/2026-09-25/agendar")
+    assert response.status_code == 200
+    updated_ids = {filters[0][1] for _, _, filters in db.updates}
+    assert updated_ids == {"ai-group", "manual-group"}
+
+
+def test_schedule_day_rejects_when_not_all_approved(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"},
+              [{"id": "s1", "estado": "pendiente", "aprobado": True, "story_group_id": "g1"},
+               {"id": "s2", "estado": "pendiente", "aprobado": False, "story_group_id": "g1"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/dias/2026-09-25/agendar")
+    assert response.status_code == 422
+    assert db.updates == []
+
+
+def test_schedule_day_ignores_cancelled_stories(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"},
+              [{"id": "s1", "estado": "pendiente", "aprobado": True, "story_group_id": "g1"},
+               {"id": "s2", "estado": "cancelada", "aprobado": False, "story_group_id": "g1"}],
+              None])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/dias/2026-09-25/agendar")
+    assert response.status_code == 200
+
+
+def test_schedule_day_requires_stories_for_that_date(monkeypatch, client):
+    db = DB([{"id": "c1", "agency_id": "agency-1"}, []])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/clientes/c1/dias/2026-09-25/agendar")
+    assert response.status_code == 422
 
 
 def test_patch_client_team_validates_team_belongs_to_agency(monkeypatch, client):
@@ -443,12 +577,123 @@ def test_edit_story_uses_original_image_and_updates_edited_url(monkeypatch, clie
     monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
     monkeypatch.setattr("app.routers.portal.requests.get", lambda url, timeout: SimpleNamespace(content=b"original", raise_for_status=lambda: None))
     called = {}
-    def edit(cfg, image, text, number): called.update(image=image, text=text, number=number); return "https://new"
+    def edit(cfg, image, text, number, font_choice=None): called.update(image=image, text=text, number=number); return "https://new"
     monkeypatch.setattr("app.routers.portal.content.editar_historia", edit)
     response = client.patch("/portal/historias/s1", json={"texto_nuevo": "updated"})
     assert response.status_code == 200
     assert called == {"image": b"original", "text": "updated", "number": 2}
     assert db.updates[-1][1] == {"text": "updated", "image_url": "https://new"}
+
+
+def test_generate_story_text_analyzes_image_and_composes_result(monkeypatch, client):
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_url": "https://old",
+             "image_original_url": "https://original", "text": ""}
+    config = {"id": "c1", "agency_id": "agency-1", "name": "Client", "business_description": "desc",
+              "weekly_focus": None, "tone_examples": [], "topics": [], "logo_url": None,
+              "calendly_link": None, "prob_link": 0}
+    db = DB([story, config, [{"id": "s1"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda url, timeout: SimpleNamespace(content=b"original", raise_for_status=lambda: None))
+    generate_called = {}
+    def generate(cfg, image): generate_called.update(image=image); return "Texto generado por la IA"
+    edit_called = {}
+    def edit(cfg, image, text, number, font_choice=None): edit_called.update(image=image, text=text, number=number); return "https://new"
+    monkeypatch.setattr("app.routers.portal.content.generar_texto_para_imagen", generate)
+    monkeypatch.setattr("app.routers.portal.content.editar_historia", edit)
+    response = client.post("/portal/historias/s1/generar-texto")
+    assert response.status_code == 200
+    assert generate_called == {"image": b"original"}
+    assert edit_called == {"image": b"original", "text": "Texto generado por la IA", "number": 1}
+    assert db.updates[-1][1] == {"text": "Texto generado por la IA", "image_url": "https://new"}
+
+
+def test_generate_story_text_surfaces_claude_errors(monkeypatch, client):
+    from app.engine.exceptions import ClaudeGenerationError
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_original_url": "https://original"}
+    config = {"id": "c1", "agency_id": "agency-1", "name": "Client", "business_description": "desc",
+              "weekly_focus": None, "tone_examples": [], "topics": [], "logo_url": None,
+              "calendly_link": None, "prob_link": 0}
+    db = DB([story, config])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda url, timeout: SimpleNamespace(content=b"original", raise_for_status=lambda: None))
+    def boom(cfg, image): raise ClaudeGenerationError("Claude no devolvió texto para la imagen.")
+    monkeypatch.setattr("app.routers.portal.content.generar_texto_para_imagen", boom)
+    response = client.post("/portal/historias/s1/generar-texto")
+    assert response.status_code == 422
+    assert db.updates == []
+
+
+@pytest.mark.parametrize("estado", ["publicando", "publicado", "cancelada"])
+def test_generate_story_text_already_published_or_cancelled_is_rejected(monkeypatch, client, estado):
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_original_url": "https://original", "estado": estado}
+    db = DB([story, {"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda *a, **k: pytest.fail("must not re-render a locked story"))
+    response = client.post("/portal/historias/s1/generar-texto")
+    assert response.status_code == 409
+    assert db.updates == []
+
+
+def test_patch_story_font_recomposes_image_with_chosen_font(monkeypatch, client):
+    story = {"id": "s1", "client_id": "c1", "order": 2, "image_url": "https://old",
+             "image_original_url": "https://original", "text": "Ya tiene texto", "estado": "pendiente"}
+    config = {"id": "c1", "agency_id": "agency-1", "name": "Client", "business_description": "desc",
+              "weekly_focus": None, "tone_examples": [], "topics": [], "logo_url": None,
+              "calendly_link": None, "prob_link": 0}
+    db = DB([story, config, [{"id": "s1", "font_choice": "poppins", "image_url": "https://new"}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda url, timeout: SimpleNamespace(content=b"original", raise_for_status=lambda: None))
+    called = {}
+    def edit(cfg, image, text, number, font_choice=None): called.update(image=image, text=text, number=number, font_choice=font_choice); return "https://new"
+    monkeypatch.setattr("app.routers.portal.content.editar_historia", edit)
+    response = client.patch("/portal/historias/s1/tipografia", json={"font_choice": "poppins"})
+    assert response.status_code == 200
+    assert response.json()["font_choice"] == "poppins"
+    assert called == {"image": b"original", "text": "Ya tiene texto", "number": 2, "font_choice": "poppins"}
+    assert db.updates[-1] == ("stories", {"font_choice": "poppins", "image_url": "https://new"}, [("id", "s1")])
+
+
+def test_patch_story_font_allows_clearing_back_to_client_default(monkeypatch, client):
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_original_url": "https://original", "text": "Texto"}
+    config = {"id": "c1", "agency_id": "agency-1", "name": "Client", "business_description": "desc",
+              "weekly_focus": None, "tone_examples": [], "topics": [], "logo_url": None,
+              "calendly_link": None, "prob_link": 0}
+    db = DB([story, config, [{"id": "s1", "font_choice": None}]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda url, timeout: SimpleNamespace(content=b"original", raise_for_status=lambda: None))
+    monkeypatch.setattr("app.routers.portal.content.editar_historia", lambda *a, **k: "https://new")
+    response = client.patch("/portal/historias/s1/tipografia", json={"font_choice": None})
+    assert response.status_code == 200
+    assert db.updates == [("stories", {"font_choice": None, "image_url": "https://new"}, [("id", "s1")])]
+
+
+def test_patch_story_font_rejects_unknown_key(monkeypatch, client):
+    db = DB([])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/historias/s1/tipografia", json={"font_choice": "comic-sans"})
+    assert response.status_code == 422
+    assert db.updates == []
+
+
+def test_patch_story_font_requires_existing_text(monkeypatch, client):
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_original_url": "https://original", "text": ""}
+    db = DB([story, {"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.patch("/portal/historias/s1/tipografia", json={"font_choice": "poppins"})
+    assert response.status_code == 422
+    assert db.updates == []
+
+
+@pytest.mark.parametrize("estado", ["publicando", "publicado", "cancelada"])
+def test_patch_story_font_already_published_or_cancelled_is_rejected(monkeypatch, client, estado):
+    story = {"id": "s1", "client_id": "c1", "order": 1, "image_original_url": "https://original",
+             "text": "Texto", "estado": estado}
+    db = DB([story, {"id": "c1", "agency_id": "agency-1"}])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    monkeypatch.setattr("app.routers.portal.requests.get", lambda *a, **k: pytest.fail("must not re-render a locked story"))
+    response = client.patch("/portal/historias/s1/tipografia", json={"font_choice": "poppins"})
+    assert response.status_code == 409
+    assert db.updates == []
 
 
 def test_reorder_updates_only_requested_stories(monkeypatch, client):

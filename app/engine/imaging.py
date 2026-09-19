@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 # Fuentes que acompanan al motor (unicas que se bundlean en assets/). Se
 # intentan en orden hasta encontrar una que exista; como ultimo recurso cae
 # en ImageFont.load_default(), lo cual se loguea porque produce Stories con
-# texto en un bitmap ilegible sin marca.
+# texto en un bitmap ilegible sin marca. Esta es la fuente por default
+# cuando el cliente no elige ninguna (font_choice = None).
 _FONT_PATHS = [
     str(Path(__file__).parent / "assets" / "Raleway[wght].ttf"),
     str(Path(__file__).parent / "assets" / "JosefinSans[wght].ttf"),
@@ -29,13 +30,72 @@ _FONT_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
+# Fuentes elegibles por cliente (clients.font_choice), todas bundleadas en
+# assets/ y de licencia OFL (Google Fonts) — se puede agregar mas sin tocar
+# nada mas que este dict + el archivo .ttf correspondiente. FONT_CHOICES es
+# lo que expone el portal para el selector; _FONT_FILES es el nombre de
+# archivo real detras de cada key.
+FONT_CHOICES: dict[str, str] = {
+    "raleway": "Raleway",
+    "josefin_sans": "Josefin Sans",
+    "poppins": "Poppins",
+    "montserrat": "Montserrat",
+    "dm_sans": "DM Sans",
+    "plus_jakarta_sans": "Plus Jakarta Sans",
+    "outfit": "Outfit",
+    "sora": "Sora",
+    "urbanist": "Urbanist",
+    "nunito": "Nunito",
+    "playfair_display": "Playfair Display",
+    "lora": "Lora",
+    "cormorant_garamond": "Cormorant Garamond",
+    "libre_baskerville": "Libre Baskerville",
+    "bebas_neue": "Bebas Neue",
+    "abril_fatface": "Abril Fatface",
+    "oswald": "Oswald",
+    "caveat": "Caveat",
+    "dancing_script": "Dancing Script",
+    "pacifico": "Pacifico",
+}
+
+_FONT_FILES: dict[str, str] = {
+    "raleway": "Raleway[wght].ttf",
+    "josefin_sans": "JosefinSans[wght].ttf",
+    "poppins": "Poppins-SemiBold.ttf",
+    "montserrat": "Montserrat[wght].ttf",
+    "dm_sans": "DMSans[opsz,wght].ttf",
+    "plus_jakarta_sans": "PlusJakartaSans[wght].ttf",
+    "outfit": "Outfit[wght].ttf",
+    "sora": "Sora[wght].ttf",
+    "urbanist": "Urbanist[wght].ttf",
+    "nunito": "Nunito[wght].ttf",
+    "playfair_display": "PlayfairDisplay[wght].ttf",
+    "lora": "Lora[wght].ttf",
+    "cormorant_garamond": "CormorantGaramond[wght].ttf",
+    "libre_baskerville": "LibreBaskerville[wght].ttf",
+    "bebas_neue": "BebasNeue-Regular.ttf",
+    "abril_fatface": "AbrilFatface-Regular.ttf",
+    "oswald": "Oswald[wght].ttf",
+    "caveat": "Caveat[wght].ttf",
+    "dancing_script": "DancingScript[wght].ttf",
+    "pacifico": "Pacifico-Regular.ttf",
+}
+
 FONT_WEIGHT = 600  # SemiBold - legible sobre fotos sin perder elegancia
 
 CTA_TEXT = "Agenda tu consulta"  # texto del link de CTA dibujado sobre la imagen
 
 
-def _load_font(size: int, weight: int = FONT_WEIGHT) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for path in _FONT_PATHS:
+def _load_font(
+    size: int, font_choice: str | None = None, weight: int = FONT_WEIGHT
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """``font_choice`` es una key de FONT_CHOICES (clients.font_choice). Si es
+    None, no reconocida, o falla al cargar, se cae al fallback histórico
+    (_FONT_PATHS) sin romper nada para los clientes que no elijan ninguna."""
+    paths = list(_FONT_PATHS)
+    if font_choice and font_choice in _FONT_FILES:
+        paths = [str(Path(__file__).parent / "assets" / _FONT_FILES[font_choice]), *paths]
+    for path in paths:
         try:
             f = ImageFont.truetype(path, size)
             try:
@@ -72,6 +132,7 @@ def componer_historia(
     num_historia: int = 1,
     logo_bytes: bytes | None = None,
     calendly_link: str | None = None,
+    font_choice: str | None = None,
 ) -> bytes:
     """Compone la imagen final (1080x1920) con ``frase`` superpuesta.
 
@@ -113,7 +174,7 @@ def componer_historia(
     draw = ImageDraw.Draw(img_final)
 
     font_size = 75
-    font_texto = _load_font(font_size)
+    font_texto = _load_font(font_size, font_choice)
 
     WHITE = (255, 255, 255, 255)
     WHITE_DIM = (255, 255, 255, 190)
@@ -140,7 +201,7 @@ def componer_historia(
         draw.text((x, y), line, font=font_texto, fill=WHITE)
 
     if agregar_cta and calendly_link:
-        font_cta = _load_font(50)
+        font_cta = _load_font(50, font_choice)
         cta_y = base_y + total_text_h + 60
         draw.text((margin, cta_y), CTA_TEXT, font=font_cta, fill=WHITE_DIM)
 

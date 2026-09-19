@@ -12,6 +12,8 @@ from app.config import get_settings
 from app.db.supabase import get_admin_client
 from app.deps import EmployeeDep
 from app.engine import content
+from app.engine.exceptions import ClaudeGenerationError
+from app.engine.imaging import _FONT_FILES, FONT_CHOICES
 from app.engine.schemas import ImagenCandidata
 from app.services import drive, uploads
 from app.services.content_jobs import PUBLISH_DAY_OFFSETS, build_content_config
@@ -25,7 +27,8 @@ _LOCKED_STATES = {"publicando", "publicado", "cancelada"}
 _CLIENT_DETAIL = (
     "id,agency_id,name,business_description,weekly_focus,"
     "weekly_focus_expires_at,tone_examples,topics,drive_folder_id,logo_url,"
-    "calendly_link,prob_link,generation_error,generation_error_at,team_id,publish_days"
+    "calendly_link,prob_link,generation_error,generation_error_at,team_id,publish_days,"
+    "font_choice"
 )
 
 
@@ -224,6 +227,40 @@ def patch_client_team(client_id: str, body: ClientTeamPatch, employee: EmployeeD
     return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "team_id": body.team_id}
 
 
+@router.get("/tipografias")
+def list_font_choices(employee: EmployeeDep):
+    # "file" points at the same bundled .ttf app.engine.imaging composes
+    # with, served read-only under /fonts, so the portal can preview each
+    # option in its own real typeface instead of just naming it.
+    return [
+        {"key": key, "label": label, "file": _FONT_FILES[key]}
+        for key, label in FONT_CHOICES.items()
+    ]
+
+
+class ClientFontPatch(BaseModel):
+    font_choice: str | None = None
+
+    @field_validator("font_choice")
+    @classmethod
+    def known_font(cls, value):
+        if value is not None and value not in FONT_CHOICES:
+            raise ValueError("Tipografía no reconocida")
+        return value
+
+
+@router.patch("/clientes/{client_id}/tipografia")
+def patch_client_font(client_id: str, body: ClientFontPatch, employee: EmployeeDep):
+    """Which bundled font the AI composes onto this client's Story images —
+    purely stylistic, so a plain update instead of the audited RPC."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    updated = db.table("clients").update({"font_choice": body.font_choice}).eq(
+        "id", client_id
+    ).execute().data
+    return updated[0] if isinstance(updated, list) and updated else {"id": client_id, "font_choice": body.font_choice}
+
+
 @router.patch("/clientes/{client_id}/ritmo")
 def patch_client_ritmo(client_id: str, body: ClientRitmoPatch, employee: EmployeeDep):
     """Which 4 weekdays (and what time each one) this client's weekly thread
@@ -304,7 +341,7 @@ async def create_manual_story(client_id: str, employee: EmployeeDep,
 
     group = db.table("story_groups").select("id").eq("client_id", client_id).eq(
         "scheduled_date", fecha_publicacion
-    ).is_("generation_week", "null").execute().data
+    ).is_("generation_week", "null").eq("agendado", False).execute().data
     if group:
         group_id = group[0]["id"]
         existing = db.table("stories").select("order").eq(
@@ -371,7 +408,7 @@ def update_manual_day_time(client_id: str, fecha_publicacion: str, body: DayTime
     _client_or_error(db, client_id, employee.agency_id)
     group = db.table("story_groups").select("id").eq("client_id", client_id).eq(
         "scheduled_date", fecha_publicacion
-    ).is_("generation_week", "null").execute().data
+    ).is_("generation_week", "null").eq("agendado", False).execute().data
     if not group:
         raise HTTPException(status_code=404, detail="No hay historias manuales para esa fecha")
     db.table("story_groups").update({"scheduled_time": f"{body.hora_publicacion}:00"}).eq(
@@ -384,6 +421,56 @@ def update_manual_day_time(client_id: str, fecha_publicacion: str, body: DayTime
             "id", editable_ids
         ).execute()
     return {"detail": "Hora actualizada", "updated": len(editable_ids)}
+
+
+class DayDescriptionPatch(BaseModel):
+    descripcion: str | None = Field(default=None, max_length=200)
+
+
+@router.patch("/clientes/{client_id}/historias/manual/{fecha_publicacion}/descripcion")
+def update_manual_day_description(client_id: str, fecha_publicacion: str, body: DayDescriptionPatch, employee: EmployeeDep):
+    """Internal-only note on what a manual day's thread is about — never sent
+    to Meta, never shown to the client. Shown as the title in the compact
+    "Plan de la próxima semana" preview once the day is agendado."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    group = db.table("story_groups").select("id").eq("client_id", client_id).eq(
+        "scheduled_date", fecha_publicacion
+    ).is_("generation_week", "null").eq("agendado", False).execute().data
+    if not group:
+        raise HTTPException(status_code=404, detail="No hay historias manuales para esa fecha")
+    updated = db.table("story_groups").update(
+        {"descripcion": (body.descripcion or None)}
+    ).eq("id", group[0]["id"]).execute().data
+    return updated[0]
+
+
+@router.patch("/clientes/{client_id}/dias/{fecha_publicacion}/agendar")
+def schedule_day(client_id: str, fecha_publicacion: str, employee: EmployeeDep):
+    """Confirms a whole day as scheduled — every story published that date is
+    one publication regardless of source (AI batch, manual upload, or both),
+    so this looks up by the stories' own fecha_publicacion (not
+    story_groups.scheduled_date, which for an AI batch is its Monday batch
+    start, not the individual day) and requires every one of them approved
+    first. Once agendado, the day moves out of "Historias generadas" (the
+    frontend's activeDates()) and shows as a small preview in "Plan de la
+    próxima semana" instead — agendado never gates real publishing, that's
+    still aprobado alone, so this can never change when something actually
+    posts to Instagram."""
+    db = get_admin_client()
+    _client_or_error(db, client_id, employee.agency_id)
+    stories = db.table("stories").select("id,estado,aprobado,story_group_id").eq(
+        "client_id", client_id
+    ).eq("fecha_publicacion", fecha_publicacion).execute().data or []
+    active = [row for row in stories if row.get("estado") not in _LOCKED_STATES]
+    if not active:
+        raise HTTPException(status_code=422, detail="No hay historias para agendar ese día")
+    if not all(row.get("aprobado") for row in active):
+        raise HTTPException(status_code=422, detail="Todavía hay historias sin aprobar ese día")
+    group_ids = {row["story_group_id"] for row in active}
+    for group_id in group_ids:
+        db.table("story_groups").update({"agendado": True}).eq("id", group_id).execute()
+    return {"detail": "Publicación agendada"}
 
 
 @router.patch("/historias/reordenar")
@@ -419,7 +506,7 @@ def reorder_stories(body: ReorderRequest, employee: EmployeeDep):
 def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
     db = get_admin_client()
     result = db.table("stories").select(
-        "id,client_id,order,text,image_url,image_original_url,estado"
+        "id,client_id,order,text,image_url,image_original_url,estado,font_choice"
     ).eq("id", story_id).maybe_single().execute()
     # postgrest-py's maybe_single() returns None outright (not a response with
     # data=None) when zero rows match — never chain `.data` directly onto it.
@@ -435,12 +522,96 @@ def patch_story(story_id: str, body: StoryPatch, employee: EmployeeDep):
     response.raise_for_status()
     image_url = content.editar_historia(
         build_content_config(client), response.content, body.texto_nuevo, story["order"],
+        font_choice=story.get("font_choice"),
     )
     updated = db.table("stories").update({
         "text": body.texto_nuevo, "image_url": image_url,
     }).eq("id", story_id).execute().data
     return updated[0] if isinstance(updated, list) and updated else {
         **story, "text": body.texto_nuevo, "image_url": image_url,
+    }
+
+
+@router.post("/historias/{story_id}/generar-texto")
+def generate_story_text(story_id: str, employee: EmployeeDep):
+    """For a manually-uploaded story with no caption yet: has Claude look at
+    the actual image (unlike the weekly-thread prompt, where the image is
+    just background inspiration) and write one line in the client's voice,
+    then composes it onto the image the same way the manual text-edit flow
+    does (editar_historia) — this is additive, not a replacement of that
+    flow, so the employee can still edit the result by hand afterward."""
+    db = get_admin_client()
+    result = db.table("stories").select(
+        "id,client_id,order,text,image_url,image_original_url,estado,font_choice"
+    ).eq("id", story_id).maybe_single().execute()
+    story = result.data if result else None
+    if not story:
+        raise HTTPException(status_code=404, detail="Historia no encontrada")
+    client = _client_or_error(db, story["client_id"], employee.agency_id)
+    if story.get("estado") in _LOCKED_STATES:
+        raise HTTPException(status_code=409, detail="La historia ya fue publicada o cancelada y no se puede editar")
+    if not story.get("image_original_url"):
+        raise HTTPException(status_code=422, detail="La historia no tiene imagen original")
+    response = requests.get(story["image_original_url"], timeout=30)
+    response.raise_for_status()
+    config = build_content_config(client)
+    try:
+        texto_nuevo = content.generar_texto_para_imagen(config, response.content)
+    except ClaudeGenerationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    image_url = content.editar_historia(
+        config, response.content, texto_nuevo, story["order"], font_choice=story.get("font_choice"),
+    )
+    updated = db.table("stories").update({
+        "text": texto_nuevo, "image_url": image_url,
+    }).eq("id", story_id).execute().data
+    return updated[0] if isinstance(updated, list) and updated else {
+        **story, "text": texto_nuevo, "image_url": image_url,
+    }
+
+
+class StoryFontPatch(BaseModel):
+    font_choice: str | None = None
+
+    @field_validator("font_choice")
+    @classmethod
+    def known_font(cls, value):
+        if value is not None and value not in FONT_CHOICES:
+            raise ValueError("Tipografía no reconocida")
+        return value
+
+
+@router.patch("/historias/{story_id}/tipografia")
+def patch_story_font(story_id: str, body: StoryFontPatch, employee: EmployeeDep):
+    """Overrides, for just this one Story, which bundled font the AI
+    composes onto its image — null falls back to the client's own
+    font_choice. Recomposes the existing image+text right away so the
+    employee sees the result without a separate "regenerate" step."""
+    db = get_admin_client()
+    result = db.table("stories").select(
+        "id,client_id,order,text,image_url,image_original_url,estado"
+    ).eq("id", story_id).maybe_single().execute()
+    story = result.data if result else None
+    if not story:
+        raise HTTPException(status_code=404, detail="Historia no encontrada")
+    client = _client_or_error(db, story["client_id"], employee.agency_id)
+    if story.get("estado") in _LOCKED_STATES:
+        raise HTTPException(status_code=409, detail="La historia ya fue publicada o cancelada y no se puede editar")
+    if not story.get("image_original_url"):
+        raise HTTPException(status_code=422, detail="La historia no tiene imagen original")
+    if not story.get("text"):
+        raise HTTPException(status_code=422, detail="La historia todavía no tiene texto para componer")
+    response = requests.get(story["image_original_url"], timeout=30)
+    response.raise_for_status()
+    image_url = content.editar_historia(
+        build_content_config(client), response.content, story["text"], story["order"],
+        font_choice=body.font_choice,
+    )
+    updated = db.table("stories").update({
+        "font_choice": body.font_choice, "image_url": image_url,
+    }).eq("id", story_id).execute().data
+    return updated[0] if isinstance(updated, list) and updated else {
+        **story, "font_choice": body.font_choice, "image_url": image_url,
     }
 
 

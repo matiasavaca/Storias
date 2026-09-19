@@ -34,6 +34,7 @@ def build_content_config(row: dict) -> ClientContentConfig:
         weekly_focus=row.get("weekly_focus"), tone_examples=row.get("tone_examples") or [],
         topics=row.get("topics"), logo_url=row.get("logo_url"),
         calendly_link=row.get("calendly_link"), prob_link=row.get("prob_link") or 0.0,
+        font_choice=row.get("font_choice"),
     )
 
 

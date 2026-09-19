@@ -232,6 +232,92 @@ def _llamar_claude(config: ClientContentConfig, image_bytes: bytes) -> list[str]
         raise ClaudeGenerationError(f"Error parseando respuesta de Claude: {e}") from e
 
 
+def _armar_prompt_historia_unica(config: ClientContentConfig) -> str:
+    """Prompt para UNA historia a partir de UNA imagen subida a mano (no un
+    hilo semanal): a diferencia de ``_armar_prompt``, acá la imagen no es
+    "inspiración de fondo" — Claude tiene que mirarla y escribir sobre lo
+    que realmente muestra, con el tono y rubro del cliente."""
+    return (
+        f"{config.business_description}\n\n"
+        "Mirá la imagen adjunta con atención: qué muestra, qué transmite, "
+        "qué se puede contar a partir de ella para este negocio.\n\n"
+        f"{_formatear_ejemplos(config.nombre_negocio, config.tone_examples)}\n\n"
+        "Escribí UNA sola historia de Instagram (una idea, un texto corto) "
+        "que describa o se inspire en lo que se ve en la imagen, conectado "
+        "con el negocio.\n\n"
+        "REGLAS DE TONO (muy importante):\n"
+        "- Lenguaje simple, cotidiano, como le hablarías a un amigo\n"
+        "- PROHIBIDO usar vocabulario técnico o de moda del rubro, salvo "
+        "que sea una palabra que cualquier persona común entendería sin "
+        "pensar\n"
+        "- Máximo 12 palabras\n"
+        "- Una sola frase. NUNCA uses el símbolo ||| ni numeres varias "
+        "opciones — se descarta todo lo que venga después de la primera "
+        "línea\n\n"
+        "Sin hashtags. Sin emojis, salvo que sume mucho.\n\n"
+        "Devolvé SOLO el texto de la historia, sin comillas ni etiquetas."
+    )
+
+
+# Historias generadas por generar_texto_para_imagen se cortan aca — mas que
+# suficiente para la regla de "maximo 12 palabras" del prompt, pero protege
+# contra una respuesta de Claude que no la respete.
+_MAX_TEXTO_HISTORIA_UNICA = 90
+
+
+def generar_texto_para_imagen(config: ClientContentConfig, image_bytes: bytes) -> str:
+    """Para una imagen subida manualmente (no parte de un hilo semanal):
+    Claude analiza esa imagen puntual y devuelve UNA historia, no un hilo de
+    4. Comparte la preparación de imagen y el cliente de Claude con
+    ``_llamar_claude`` pero no reutiliza esa función porque el prompt y el
+    parseo de la respuesta son distintos (una historia, no 4 separadas por
+    ``|||``) — y a diferencia de ahí, acá el modelo puede ignorar la
+    instrucción de "una sola" igual, así que el resultado se sanea
+    defensivamente: se toma solo la primera línea/segmento y se corta a un
+    largo razonable para una Story."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ClaudeGenerationError("ANTHROPIC_API_KEY no está configurada en el entorno.")
+
+    prepared_bytes, media_type = _preparar_imagen_para_claude(image_bytes)
+    imagen_b64 = base64.standard_b64encode(prepared_bytes).decode("utf-8")
+    prompt = _armar_prompt_historia_unica(config)
+
+    client = anthropic.Anthropic(api_key=api_key)
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=60,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": imagen_b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+    except Exception as e:
+        raise ClaudeGenerationError(f"Error llamando a Claude: {e}") from e
+
+    texto = response.content[0].text.strip()
+    # Si Claude ignoró "una sola" y devolvió varias opciones (con ||| o en
+    # líneas separadas), nos quedamos solo con la primera.
+    texto = re.split(r"\|\|\||\n", texto)[0].strip()
+    texto = _limpiar_emojis(texto)
+    if len(texto) > _MAX_TEXTO_HISTORIA_UNICA:
+        texto = texto[:_MAX_TEXTO_HISTORIA_UNICA].rsplit(" ", 1)[0] + "…"
+    if not texto:
+        raise ClaudeGenerationError("Claude no devolvió texto para la imagen.")
+    return texto
+
+
 # -----------------------------------------
 # LOGO
 # -----------------------------------------
@@ -335,6 +421,7 @@ def generar_hilo(config: ClientContentConfig, imagenes: list[ImagenCandidata]) -
                 num_historia=i,
                 logo_bytes=logo_bytes,
                 calendly_link=config.calendly_link,
+                font_choice=config.font_choice,
             )
         except Exception as e:
             raise ImageProcessingError(f"Error componiendo la historia {i}: {e}") from e
@@ -356,10 +443,16 @@ def editar_historia(
     imagen_original_bytes: bytes,
     texto_nuevo: str,
     num_historia: int,
+    font_choice: str | None = None,
 ) -> str:
     """
     Re-edita UNA historia a partir de su imagen SIN texto (nunca de la ya
     editada). Devuelve la URL nueva de Cloudinary.
+
+    ``font_choice`` es un override puntual de la historia (por ejemplo, el
+    empleado elige otra tipografia solo para esta Story desde el editor);
+    si es ``None`` se usa la tipografia default del cliente
+    (``config.font_choice``), igual que antes de que existiera este param.
     """
     logo_bytes = _descargar_logo(config)
     agregar_cta = (num_historia == 4) and random.random() < config.prob_link
@@ -372,6 +465,7 @@ def editar_historia(
             num_historia=num_historia,
             logo_bytes=logo_bytes,
             calendly_link=config.calendly_link,
+            font_choice=font_choice if font_choice is not None else config.font_choice,
         )
     except Exception as e:
         raise ImageProcessingError(

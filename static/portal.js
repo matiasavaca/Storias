@@ -4,6 +4,17 @@
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[char]);
   function avatarColor(id) { let hash = 0; for (const ch of String(id)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0; return hash % 6; }
+  let fontFacesInjected = false;
+  function injectFontFaces(fonts) {
+    // Lets the <option> list below render each font's name IN that font,
+    // so an employee can eyeball how it looks before picking it.
+    if (fontFacesInjected) return; fontFacesInjected = true;
+    const style = document.createElement('style');
+    style.textContent = fonts.map((font) =>
+      `@font-face{font-family:'sf-${font.key}';src:url('/fonts/${encodeURIComponent(font.file)}');font-display:swap;}`
+    ).join('');
+    document.head.appendChild(style);
+  }
 
   async function api(path, options = {}) {
     const response = await fetch(path, {credentials: 'same-origin', headers: {'Content-Type':'application/json', ...(options.headers || {})}, ...options});
@@ -16,8 +27,39 @@
     }
     return response.status === 204 ? null : response.json();
   }
-  function showMessage(text, error = false) { $('message').textContent = text; $('message').className = `notice${error ? ' error' : ''}`; }
-  function clearMessage() { $('message').className = 'notice hidden'; }
+  let toastTimer = null;
+  function showMessage(text, error = false) {
+    $('toast-text').textContent = text;
+    $('toast').className = `toast${error ? ' error' : ''}`;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(clearMessage, 4000);
+  }
+  function clearMessage() {
+    $('toast').className = 'toast hidden';
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+  }
+  function confirmDialog(text, {okLabel = 'Confirmar', danger = false} = {}) {
+    return new Promise((resolve) => {
+      const dialog = $('confirm-dialog');
+      $('confirm-text').textContent = text;
+      $('confirm-ok').textContent = okLabel;
+      $('confirm-ok').className = `btn primary${danger ? ' danger' : ''}`;
+      const settle = (value) => { dialog.close(); resolve(value); };
+      const onOk = () => { cleanup(); settle(true); };
+      const onCancel = () => { cleanup(); settle(false); };
+      function cleanup() {
+        $('confirm-ok').removeEventListener('click', onOk);
+        $('confirm-cancel').removeEventListener('click', onCancel);
+        $('confirm-close').removeEventListener('click', onCancel);
+        dialog.removeEventListener('cancel', onCancel);
+      }
+      $('confirm-ok').addEventListener('click', onOk);
+      $('confirm-cancel').addEventListener('click', onCancel);
+      $('confirm-close').addEventListener('click', onCancel);
+      dialog.addEventListener('cancel', onCancel); // Esc key
+      dialog.showModal();
+    });
+  }
   function initials(name) { return String(name || '?').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase(); }
   function setControlsDisabled(disabled) { ['save-description','save-focus','try-prompt','save-story'].forEach((id) => { $(id).disabled = disabled; }); }
   function driveUrl(folderId) { return folderId ? `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}` : null; }
@@ -29,9 +71,13 @@
 
   async function loadMeAndTeams() {
     try {
-      const [me, teams] = await Promise.all([api('/portal/me'), api('/portal/equipos')]);
-      state.me = me; state.teams = teams;
+      const [me, teams, fonts] = await Promise.all([api('/portal/me'), api('/portal/equipos'), api('/portal/tipografias')]);
+      state.me = me; state.teams = teams; state.fontChoices = fonts;
       $('client-team').innerHTML = '<option value="">Sin equipo</option>' + teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join('');
+      injectFontFaces(fonts);
+      const fontOptions = fonts.map((font) => `<option value="${escapeHtml(font.key)}" style="font-family:'sf-${escapeHtml(font.key)}',sans-serif">${escapeHtml(font.label)}</option>`).join('');
+      $('client-font').innerHTML = '<option value="">Default</option>' + fontOptions;
+      $('story-font').innerHTML = '<option value="">Default del cliente</option>' + fontOptions;
       $('me-avatar').textContent = initials(me.name || me.email); $('me-name').textContent = me.name || me.email;
       $('me-role').textContent = me.role === 'admin' ? 'Administrador' : 'Empleado'; $('me-card').classList.remove('hidden');
     } catch (error) { /* non-fatal: the sidebar just falls back to a flat, ungrouped list */ }
@@ -139,6 +185,7 @@
     updateFieldView('focus', state.client.weekly_focus, 'Sin enfoque puntual para esta semana.');
     setFieldMode('description', false); setFieldMode('focus', false);
     $('client-team').value = state.client.team_id || '';
+    $('client-font').value = state.client.font_choice || '';
     $('gen-dot').className = `gen-dot${state.client.generation_error ? ' warn' : ''}`;
     $('header-tags').innerHTML = (state.client.topics || []).slice(0, 4).map((topic) => `<span class="tag">${escapeHtml(topic)}</span>`).join('');
     const url = driveUrl(state.client.drive_folder_id);
@@ -155,39 +202,61 @@
     return state.groups[0];
   }
   function activeDates() {
-    // Every date covered by the nearest group, plus any date the employee has
-    // clicked on the calendar this session — these render as editable rows in
-    // "Historias generadas". Everything else is just "scheduled" and shows as
-    // a compact preview in "Plan de la próxima semana" instead.
+    // Every date covered by the nearest not-yet-agendado group, plus any date
+    // the employee has clicked on the calendar this session — these render as
+    // editable rows in "Historias generadas". Everything else (including any
+    // manual day already confirmed as agendado) is just "scheduled" and shows
+    // as a compact preview in "Plan de la próxima semana" instead.
     const dates = new Set();
-    const group = state.groups[0];
+    const agendadoDates = new Set();
+    for (const g of state.groups) {
+      if (g.agendado) for (const story of (g.stories || [])) if (story.fecha_publicacion) agendadoDates.add(story.fecha_publicacion);
+    }
+    const group = state.groups.find((g) => !g.agendado);
     if (group) {
       for (const story of (group.stories || [])) if (story.fecha_publicacion) dates.add(story.fecha_publicacion);
       if (!dates.size && group.scheduled_date) dates.add(group.scheduled_date);
     }
-    for (const iso of draftDates) dates.add(iso);
+    for (const iso of draftDates) if (!agendadoDates.has(iso)) dates.add(iso);
     return dates;
+  }
+  function planItemsByDate() {
+    // Every date whose content is "done" — an agendado manual group, or a
+    // date outside the active editable window — grouped into one entry per
+    // day, since Plan shows one box per day with ALL of that day's images.
+    const active = activeDates();
+    const byDate = new Map();
+    for (const group of state.groups) {
+      for (const story of (group.stories || [])) {
+        if (!story.fecha_publicacion) continue;
+        if (!(group.agendado || !active.has(story.fecha_publicacion))) continue;
+        if (!byDate.has(story.fecha_publicacion)) byDate.set(story.fecha_publicacion, {stories: [], descripcion: null});
+        const entry = byDate.get(story.fecha_publicacion);
+        entry.stories.push(story);
+        if (!entry.descripcion && group.descripcion) entry.descripcion = group.descripcion;
+      }
+    }
+    return byDate;
   }
   function renderPlan() {
     $('plan-panel').classList.remove('hidden');
-    const active = activeDates();
-    const items = [];
-    for (const group of state.groups) {
-      for (const story of (group.stories || [])) if (story.fecha_publicacion && !active.has(story.fecha_publicacion)) items.push(story);
-    }
-    items.sort((a,b) => a.fecha_publicacion.localeCompare(b.fecha_publicacion) || String(a.hora_publicacion||'').localeCompare(String(b.hora_publicacion||'')));
-    if (!items.length) {
+    const byDate = planItemsByDate();
+    const dates = [...byDate.keys()].sort();
+    if (!dates.length) {
       $('plan-range').textContent = '';
       $('plan-days').innerHTML = '<div class="empty">No hay más publicaciones programadas todavía.</div>';
       return;
     }
-    const first = items[0].fecha_publicacion, last = items[items.length - 1].fecha_publicacion;
-    $('plan-range').textContent = first === last ? dayLabel(first) : `${dayLabel(first)} – ${dayLabel(last)}`;
-    $('plan-days').innerHTML = items.map((story) => {
-      const title = story.text || 'Sin texto todavía';
+    $('plan-range').textContent = dates.length === 1 ? dayLabel(dates[0]) : `${dayLabel(dates[0])} – ${dayLabel(dates[dates.length - 1])}`;
+    $('plan-days').innerHTML = dates.map((iso) => {
+      const entry = byDate.get(iso);
+      const stories = [...entry.stories].sort((a,b) => a.order - b.order);
+      const first = stories[0];
+      const title = entry.descripcion || stories.map((s) => s.text).find(Boolean) || 'Sin texto todavía';
       const shortTitle = title.length > 40 ? title.slice(0, 37) + '…' : title;
-      const hora = story.hora_publicacion ? String(story.hora_publicacion).slice(0,5) : '';
-      return `<div class="plan-chip" data-story-id="${escapeHtml(story.id)}"><span class="grip">⠿</span><span class="thumb">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="">` : '🖼'}</span><div class="plan-chip-body"><div class="date">${escapeHtml(dayLabel(story.fecha_publicacion))}${hora ? ' · ' + hora : ''}</div><div class="title">${escapeHtml(shortTitle)}</div><div class="type">Story única</div></div><div class="plan-chip-actions"><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div></div>`;
+      const hora = first.hora_publicacion ? String(first.hora_publicacion).slice(0,5) : '';
+      const count = stories.length;
+      return `<div class="plan-chip" data-plan-date="${escapeHtml(iso)}"><span class="grip">⠿</span><span class="thumb">${first.image_url ? `<img src="${escapeHtml(first.image_url)}" alt="">` : '🖼'}</span><div class="plan-chip-body"><div class="date">${escapeHtml(dayLabel(iso))}${hora ? ' · ' + hora : ''}</div><div class="title">${escapeHtml(shortTitle)}</div><div class="type">${count} historia${count===1?'':'s'}</div></div><button class="icon-btn plan-chip-delete" data-plan-delete="${escapeHtml(iso)}" aria-label="Eliminar toda la publicación de este día">🗑</button></div>`;
     }).join('');
   }
   function groupDate(group) {
@@ -199,13 +268,14 @@
     // in a "+" tile, so any day can hold as many images as needed — never just one.
     const active = activeDates();
     const byDate = new Map();
-    const manualDates = new Set(); // dates with a manual (non-AI) group — their time is editable inline
+    const manualGroupByDate = new Map(); // date -> its manual (non-AI) group, if any
     for (const group of state.groups) {
+      if (group.agendado) continue; // already confirmed — lives in "Plan" only, never here
       for (const story of (group.stories || [])) {
         if (!story.fecha_publicacion || !active.has(story.fecha_publicacion)) continue;
         if (!byDate.has(story.fecha_publicacion)) byDate.set(story.fecha_publicacion, []);
         byDate.get(story.fecha_publicacion).push(story);
-        if (!group.generation_week) manualDates.add(story.fecha_publicacion);
+        if (!group.generation_week) manualGroupByDate.set(story.fecha_publicacion, group);
       }
     }
     for (const iso of active) if (!byDate.has(iso)) byDate.set(iso, []);
@@ -220,13 +290,18 @@
     $('week-badge').classList.remove('hidden');
     const rows = dates.map((iso) => {
       const stories = byDate.get(iso).sort((a,b) => a.order - b.order);
-      const cards = stories.map((story,index) => storyCard(story,index,stories.length)).join('');
-      const allApproved = stories.length > 0 && stories.every((s) => s.aprobado);
-      const statusBadge = allApproved ? '<span class="badge">Agendado</span>' : '';
-      const timeEditable = !stories.length || manualDates.has(iso);
+      const cards = stories.map((story,index) => storyCard(story,index)).join('');
+      const manualGroup = manualGroupByDate.get(iso);
+      // A day publishes once — AI batch and manual uploads sharing a date are
+      // one publication, so "listo para agendar" only needs everything for
+      // that date approved, regardless of which group(s) contributed it.
+      const readyToSchedule = stories.length > 0 && stories.every((s) => s.aprobado);
+      const scheduleBtn = readyToSchedule ? `<button class="badge schedule-btn" data-schedule-date="${escapeHtml(iso)}">📅 Agendar</button>` : '';
+      const timeEditable = !stories.length || manualGroupByDate.has(iso);
       const timeValue = stories.length && stories[0].hora_publicacion ? String(stories[0].hora_publicacion).slice(0,5) : '09:00';
       const timeInput = `<input type="time" class="day-time" data-time-for="${escapeHtml(iso)}" value="${escapeHtml(timeValue)}" ${timeEditable ? '' : 'disabled title="Este día usa el horario de Editar ritmo"'}>`;
-      return `<div class="day-row" data-date="${escapeHtml(iso)}"><div class="day-row-head"><span class="section-title">${escapeHtml(dayLabel(iso))}</span>${statusBadge}${timeInput}</div><div class="day-row-cards">${cards}<div class="story add-placeholder" data-add-date="${escapeHtml(iso)}"><span class="add-icon">+</span></div></div></div>`;
+      const descInput = manualGroup ? `<input type="text" class="day-desc" data-desc-for="${escapeHtml(iso)}" maxlength="200" value="${escapeHtml(manualGroup.descripcion || '')}" placeholder="Descripción interna (opcional) — ¿de qué va este hilo?">` : '';
+      return `<div class="day-row" data-date="${escapeHtml(iso)}"><div class="day-row-head"><div class="day-row-top"><span class="section-title">${escapeHtml(dayLabel(iso))}</span>${scheduleBtn}${timeInput}</div>${descInput}</div><div class="day-row-cards">${cards}<div class="story add-placeholder" data-add-date="${escapeHtml(iso)}"><span class="add-icon">+</span></div></div></div>`;
     }).join('');
     $('stories').innerHTML = `<section class="group">${rows}</section>`;
   }
@@ -248,12 +323,11 @@
       ? `<div class="status-card warn"><span>⚠️</span><div><strong>Necesita atención</strong><p>${escapeHtml(state.client.generation_error)}</p></div></div>`
       : `<div class="status-card ok"><span>✓</span><div><strong>Todo en orden</strong><p>No hay errores de generación pendientes.</p></div></div>`;
   }
-  function storyCard(story, index, total, showMove = true) {
+  function storyCard(story, index) {
     const dateBadge = story.fecha_publicacion ? `<span class="story-date">${escapeHtml(dayLabel(story.fecha_publicacion))}</span>` : '';
-    const moveButtons = showMove ? `<button class="icon-btn" data-action="move-left" ${index===0?'disabled':''} aria-label="Mover a la izquierda">←</button><button class="icon-btn" data-action="move-right" ${index===total-1?'disabled':''} aria-label="Mover a la derecha">→</button>` : '';
     const approvedClass = story.aprobado ? ' approved' : '';
     const approvedBadge = story.aprobado ? '<span class="approved-badge" title="Aprobada">✓</span>' : '';
-    return `<article class="story${approvedClass}" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span>${dateBadge}${approvedBadge}<div class="story-actions">${moveButtons}<button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text || 'Sin texto todavía')}</p></div></article>`;
+    return `<article class="story${approvedClass}" draggable="true" data-story-id="${escapeHtml(story.id)}">${story.image_url ? `<img src="${escapeHtml(story.image_url)}" alt="Historia ${index+1}">` : ''}<span class="story-num">${index+1}</span>${dateBadge}${approvedBadge}<div class="story-actions"><button class="icon-btn" data-action="preview" aria-label="Ver en grande">👁</button><button class="icon-btn" data-action="edit" aria-label="Editar">✎</button><button class="icon-btn" data-action="delete" aria-label="Eliminar">×</button></div><div class="story-overlay"><p class="story-text">${escapeHtml(story.text || 'Sin texto todavía')}</p></div></article>`;
   }
   async function saveClientField(field, buttonId) {
     const name = field === 'weekly_focus' ? 'focus' : 'description';
@@ -280,6 +354,16 @@
     } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) { showMessage(error.message,true); select.value = state.client?.team_id || ''; } }
     finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) select.disabled=false; }
   }
+  async function saveClientFont() {
+    const select=$('client-font'), clientId=state.client?.id, selectionVersion=state.selectionVersion, fontChoice=select.value || null;
+    if (!clientId || fontChoice === (state.client?.font_choice || null)) return; select.disabled=true;
+    try {
+      const updated = await api(`/portal/clientes/${encodeURIComponent(clientId)}/tipografia`, {method:'PATCH', body:JSON.stringify({font_choice:fontChoice})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.client.font_choice = updated.font_choice; showMessage('Tipografía actualizada.');
+    } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) { showMessage(error.message,true); select.value = state.client?.font_choice || ''; } }
+    finally { if (selectionVersion === state.selectionVersion && clientId === state.client?.id) select.disabled=false; }
+  }
   async function tryPrompt() {
     const button=$('try-prompt'), preview=$('prompt-preview'), clientId=state.client?.id, selectionVersion=state.selectionVersion;
     if (!clientId) return; button.disabled=true; preview.classList.remove('hidden'); preview.textContent='Generando prueba...';
@@ -298,6 +382,7 @@
   let draftDates = new Set(); // ISO dates clicked on the calendar, waiting for an image — shown as empty "+" cards in "Historias generadas"
   function monthBase() { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + calMonthOffset); return d; }
   function isoDate(year, month, day) { return `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`; }
+  function todayIso() { const d = new Date(); return isoDate(d.getFullYear(), d.getMonth(), d.getDate()); }
   function renderCalendarMonth() {
     const base = monthBase(), year = base.getFullYear(), month = base.getMonth();
     const monthLabel = base.toLocaleDateString('es-AR', {month:'long', year:'numeric'});
@@ -308,11 +393,13 @@
     while (cells.length % 7 !== 0) cells.push(null);
     const contentDates = new Set();
     for (const group of state.groups) for (const story of (group.stories || [])) if (story.fecha_publicacion) contentDates.add(story.fecha_publicacion);
+    const today = todayIso();
     $('calendar-grid').innerHTML = cells.map((day) => {
       if (day === null) return '<div class="cal-cell outside"></div>';
       const iso = isoDate(year, month, day);
+      const isPast = iso < today;
       const pending = draftDates.has(iso) && !contentDates.has(iso);
-      return `<div class="cal-cell${pending?' pending':''}" data-date="${iso}">${day}${contentDates.has(iso)?'<span class="dot"></span>':''}</div>`;
+      return `<div class="cal-cell${pending?' pending':''}${isPast?' past':''}" data-date="${iso}">${day}${contentDates.has(iso)?'<span class="dot"></span>':''}</div>`;
     }).join('');
   }
   function renderRitmoChips() {
@@ -354,10 +441,22 @@
       const response = await fetch(`/portal/clientes/${encodeURIComponent(clientId)}/historias/manual`, {method:'POST', credentials:'same-origin', body: formData});
       if (response.status === 401) { window.location.assign('/login'); return; }
       if (!response.ok) { let detail = 'No se pudo subir la imagen.'; try { detail = (await response.json()).detail || detail; } catch(_) {} throw new Error(detail); }
+      const story = await response.json();
       if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
-      const groups = await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`);
-      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
-      state.groups = groups; draftDates.add(iso); // keep the row open so more images can be added
+      // Append locally instead of refetching /historias — with several
+      // uploads firing close together, whichever refetch resolved last could
+      // clobber state.groups with a snapshot taken before an earlier upload's
+      // write had landed, silently dropping it from the screen.
+      let group = state.groups.find((g) => g.id === story.story_group_id);
+      if (!group) {
+        group = {id: story.story_group_id, client_id: clientId, scheduled_date: iso,
+          scheduled_time: `${hora}:00`, generation_week: null, agendado: false,
+          descripcion: null, stories: []};
+        state.groups.push(group);
+        state.groups.sort((a,b) => String(a.scheduled_date||'').localeCompare(String(b.scheduled_date||'')));
+      }
+      group.stories = [...(group.stories || []), story];
+      draftDates.add(iso); // keep the row open so more images can be added
       renderStories(); renderPlan(); renderCalendarMonth(); renderActivity();
       showMessage('Imagen agregada.');
     } catch(error) { showMessage(error.message, true); }
@@ -365,13 +464,47 @@
   async function toggleApproval(story) {
     const clientId = state.client?.id, selectionVersion = state.selectionVersion;
     if (!clientId) return;
-    const next = !story.aprobado;
+    const previous = story.aprobado, next = !previous;
+    story.aprobado = next; // optimistic — feels instant, reverted below on failure
+    renderStories(); renderPlan();
     try {
       const updated = await api(`/portal/historias/${encodeURIComponent(story.id)}/aprobar`, {method:'PATCH', body:JSON.stringify({aprobado: next})});
       if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
       Object.assign(story, updated);
       renderStories(); renderPlan();
-    } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message, true); }
+      if (next && story.fecha_publicacion) maybePromptSchedule(story.fecha_publicacion);
+    } catch(error) {
+      story.aprobado = previous;
+      if (selectionVersion === state.selectionVersion) {
+        renderStories(); renderPlan();
+        if (!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message, true);
+      }
+    }
+  }
+  async function maybePromptSchedule(iso) {
+    // A day publishes once — every story dated iso (AI batch, manual upload,
+    // or both) counts toward "ready", from any group not already agendado.
+    const dayStories = [];
+    for (const group of state.groups) {
+      if (group.agendado) continue;
+      for (const story of (group.stories || [])) if (story.fecha_publicacion === iso) dayStories.push(story);
+    }
+    if (!dayStories.length || !dayStories.every((s) => s.aprobado)) return;
+    const confirmed = await confirmDialog(`Se aprobaron todas las historias del ${dayLabel(iso)}. ¿Agendar la publicación para ese día?`, {okLabel:'Agendar'});
+    if (confirmed) scheduleDay(iso);
+  }
+  async function scheduleDay(iso) {
+    const clientId = state.client?.id, selectionVersion = state.selectionVersion;
+    if (!clientId) return;
+    try {
+      await api(`/portal/clientes/${encodeURIComponent(clientId)}/dias/${encodeURIComponent(iso)}/agendar`, {method:'PATCH'});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      const groups = await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`);
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.groups = groups;
+      renderStories(); renderPlan(); renderCalendarMonth(); renderActivity();
+      showMessage('Publicación agendada.');
+    } catch(error) { showMessage(error.message, true); }
   }
   async function updateDayTime(iso, hhmm) {
     const clientId = state.client?.id, selectionVersion = state.selectionVersion;
@@ -388,6 +521,19 @@
       showMessage('Hora actualizada.');
     } catch(error) { showMessage(error.message, true); }
   }
+  async function updateDayDescription(iso, descripcion) {
+    const clientId = state.client?.id, selectionVersion = state.selectionVersion;
+    if (!clientId) return;
+    try {
+      await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias/manual/${encodeURIComponent(iso)}/descripcion`, {method:'PATCH', body:JSON.stringify({descripcion})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      const groups = await api(`/portal/clientes/${encodeURIComponent(clientId)}/historias`);
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id) return;
+      state.groups = groups;
+      renderStories(); renderPlan();
+      showMessage('Descripción guardada.');
+    } catch(error) { showMessage(error.message, true); }
+  }
   async function openHistory() {
     const clientId = state.client?.id; if (!clientId) return;
     $('history-list').textContent = 'Cargando...'; $('history-dialog').showModal();
@@ -397,7 +543,77 @@
     } catch (error) { $('history-list').textContent = error.message; }
   }
   function findStory(storyId) { for (const group of state.groups) { const story=(group.stories||[]).find((item)=>item.id===storyId); if(story) return {group,story}; } return null; }
-  function openStory(story) { state.editingStory=story; $('story-text').value=story.text || ''; $('story-dialog').showModal(); }
+  function openStory(story, group) {
+    state.editingStory=story; $('story-text').value=story.text || '';
+    $('story-edit-img').src = story.image_url || '';
+    // Only offer AI-generated text for manually-uploaded stories — never for
+    // an AI-thread story, whose text is already carefully written per-slot.
+    const isManual = !!group && !group.generation_week;
+    $('generate-ai-text').classList.toggle('hidden', !isManual);
+    $('generate-ai-text').textContent = story.text ? '🔄 Generar otra vez' : '✨ Generar con IA';
+    // Changing the font recomposes the existing text onto the image, so it
+    // only makes sense once the story actually has text saved.
+    $('story-font').value = story.font_choice || '';
+    $('story-font').disabled = !story.text;
+    $('story-dialog').showModal();
+  }
+  async function saveStoryFont() {
+    const select=$('story-font'), story=state.editingStory, clientId=state.client?.id, selectionVersion=state.selectionVersion, fontChoice=select.value || null;
+    if (!story || !clientId || fontChoice === (story.font_choice || null)) return;
+    select.disabled=true;
+    try {
+      const updated = await api(`/portal/historias/${encodeURIComponent(story.id)}/tipografia`, {method:'PATCH', body:JSON.stringify({font_choice:fontChoice})});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id || story !== state.editingStory) return;
+      Object.assign(story, updated);
+      $('story-edit-img').src = updated.image_url || '';
+      renderStories(); renderPlan();
+      showMessage('Tipografía actualizada.');
+    } catch(error) {
+      if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) { showMessage(error.message,true); select.value = story?.font_choice || ''; }
+    }
+    finally { if (selectionVersion === state.selectionVersion && story === state.editingStory) select.disabled=false; }
+  }
+  async function generateStoryText() {
+    const button=$('generate-ai-text'), story=state.editingStory, clientId=state.client?.id, selectionVersion=state.selectionVersion;
+    if (!story || !clientId) return;
+    const previousLabel = button.textContent;
+    button.disabled=true; button.textContent='Generando...';
+    try {
+      const updated = await api(`/portal/historias/${encodeURIComponent(story.id)}/generar-texto`, {method:'POST'});
+      if (selectionVersion !== state.selectionVersion || clientId !== state.client?.id || story !== state.editingStory) return;
+      Object.assign(story, updated);
+      $('story-text').value = updated.text || '';
+      $('story-edit-img').src = updated.image_url || '';
+      $('story-font').value = updated.font_choice || ''; $('story-font').disabled = false;
+      button.textContent = '🔄 Generar otra vez';
+      renderStories(); renderPlan();
+      showMessage('Texto generado con IA.');
+    } catch(error) {
+      button.textContent = previousLabel;
+      if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message, true);
+    }
+    finally { button.disabled=false; }
+  }
+  let previewStories = [], previewIndex = 0;
+  function renderPreviewBars() {
+    // Only stories already passed are filled — like Instagram, the one
+    // currently showing starts empty rather than already complete.
+    $('ig-preview-bars').innerHTML = previewStories.map((_, i) => `<span class="ig-bar${i<previewIndex?' filled':''}"></span>`).join('');
+  }
+  function showPreviewStory() {
+    const story = previewStories[previewIndex];
+    // The text is already baked into the composed image itself — no
+    // separate caption overlay, or it would show up twice.
+    $('ig-preview-img').src = story.image_url || '';
+    renderPreviewBars();
+  }
+  function openPreview(stories) {
+    previewStories = stories; previewIndex = 0;
+    showPreviewStory();
+    $('ig-preview-dialog').showModal();
+  }
+  function previewNext() { if (previewIndex < previewStories.length - 1) { previewIndex++; showPreviewStory(); } else { $('ig-preview-dialog').close(); } }
+  function previewPrev() { if (previewIndex > 0) { previewIndex--; showPreviewStory(); } }
   async function saveStory() {
     const button=$('save-story'), textoNuevo=$('story-text').value.trim(), story=state.editingStory, clientId=state.client?.id, selectionVersion=state.selectionVersion;
     if(!textoNuevo || !story || !clientId)return; button.disabled=true;
@@ -408,17 +624,71 @@
     } catch(error) { if (selectionVersion === state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
     finally { if (selectionVersion === state.selectionVersion) button.disabled=false; }
   }
-  async function moveStory(group, story, direction) {
-    const clientId=state.client?.id, selectionVersion=state.selectionVersion, stories=[...group.stories].sort((a,b)=>a.order-b.order), index=stories.findIndex((item)=>item.id===story.id), target=index+direction; if(!clientId||target<0||target>=stories.length)return;
-    [stories[index],stories[target]]=[stories[target],stories[index]];
+  async function reorderStory(group, draggedId, targetId) {
+    const clientId=state.client?.id, selectionVersion=state.selectionVersion;
+    if (!clientId || draggedId === targetId) return;
+    const stories=[...group.stories].sort((a,b)=>a.order-b.order);
+    const fromIndex=stories.findIndex((item)=>item.id===draggedId), toIndex=stories.findIndex((item)=>item.id===targetId);
+    if (fromIndex<0 || toIndex<0) return;
+    const [moved]=stories.splice(fromIndex,1); stories.splice(toIndex,0,moved);
     const historias=stories.map((item,position)=>({story_id:item.id,nuevo_order:position+1}));
     try { await api('/portal/historias/reordenar',{method:'PATCH',body:JSON.stringify({historias})}); if(selectionVersion!==state.selectionVersion||clientId!==state.client?.id)return; stories.forEach((item,position)=>{item.order=position+1;}); group.stories=stories; renderStories(); renderPlan(); showMessage('Orden actualizado.'); }
     catch(error) { if (selectionVersion===state.selectionVersion&&!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
   }
   async function deleteStory(group, story) {
-    const clientId=state.client?.id, selectionVersion=state.selectionVersion; if(!clientId||!window.confirm('¿Cancelar esta historia?'))return;
-    try { await api(`/portal/historias/${encodeURIComponent(story.id)}`,{method:'DELETE'}); if(selectionVersion!==state.selectionVersion||clientId!==state.client?.id)return; group.stories=group.stories.filter((item)=>item.id!==story.id); renderStories(); renderPlan(); renderActivity(); showMessage('Historia cancelada.'); }
-    catch(error) { if (selectionVersion===state.selectionVersion&&!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); }
+    const clientId=state.client?.id, selectionVersion=state.selectionVersion; if(!clientId)return false;
+    const confirmed = await confirmDialog('¿Cancelar esta historia? Esta acción no se puede deshacer.', {okLabel:'Sí, cancelar', danger:true});
+    if (!confirmed || selectionVersion!==state.selectionVersion || clientId!==state.client?.id) return false;
+    try {
+      await api(`/portal/historias/${encodeURIComponent(story.id)}`,{method:'DELETE'});
+      if (selectionVersion!==state.selectionVersion||clientId!==state.client?.id) return false;
+      group.stories=group.stories.filter((item)=>item.id!==story.id);
+      renderStories(); renderPlan(); renderActivity(); showMessage('Historia cancelada.');
+      return true;
+    }
+    catch(error) { if (selectionVersion===state.selectionVersion&&!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true); return false; }
+  }
+  async function deletePlanDay(iso) {
+    // Bulk-delete every story making up this day's already-scheduled
+    // publication (AI + manual groups combined), same "in case something
+    // wrong got uploaded" escape hatch deleteStory gives for one image.
+    const clientId=state.client?.id, selectionVersion=state.selectionVersion;
+    const entry = planItemsByDate().get(iso);
+    if (!clientId || !entry || !entry.stories.length) return;
+    const count = entry.stories.length;
+    const confirmed = await confirmDialog(
+      `¿Eliminar ${count === 1 ? 'esta publicación' : `las ${count} historias`} del ${dayLabel(iso)}? Esta acción no se puede deshacer.`,
+      {okLabel:'Sí, eliminar', danger:true});
+    if (!confirmed || selectionVersion!==state.selectionVersion || clientId!==state.client?.id) return;
+    const ids = entry.stories.map((story) => story.id);
+    try {
+      await Promise.all(ids.map((id) => api(`/portal/historias/${encodeURIComponent(id)}`,{method:'DELETE'})));
+      if (selectionVersion!==state.selectionVersion||clientId!==state.client?.id) return;
+      const idSet = new Set(ids);
+      for (const group of state.groups) group.stories = (group.stories||[]).filter((story) => !idSet.has(story.id));
+      renderStories(); renderPlan(); renderActivity();
+      showMessage('Publicación eliminada.');
+    } catch(error) {
+      if (selectionVersion===state.selectionVersion && !['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message,true);
+    }
+  }
+  function editPreviewStory() {
+    const story = previewStories[previewIndex];
+    if (!story) return;
+    const found = findStory(story.id);
+    $('ig-preview-dialog').close();
+    openStory(story, found ? found.group : null);
+  }
+  async function deletePreviewStory() {
+    const story = previewStories[previewIndex];
+    const found = story && findStory(story.id);
+    if (!found) return;
+    const deleted = await deleteStory(found.group, story);
+    if (!deleted) return;
+    previewStories = previewStories.filter((item) => item.id !== story.id);
+    if (!previewStories.length) { $('ig-preview-dialog').close(); return; }
+    if (previewIndex >= previewStories.length) previewIndex = previewStories.length - 1;
+    showPreviewStory();
   }
   $('client-list').addEventListener('click',(event)=>{const item=event.target.closest('[data-client-id]');if(item)selectClient(item.dataset.clientId);});
   $('only-mine').addEventListener('change',loadClients);
@@ -426,6 +696,7 @@
   $('save-focus').addEventListener('click',()=>saveClientField('weekly_focus','save-focus'));
   $('try-prompt').addEventListener('click',tryPrompt);
   $('client-team').addEventListener('change',saveClientTeam);
+  $('client-font').addEventListener('change',saveClientFont);
   $('add-team').addEventListener('click',createTeam);
   $('business-description').addEventListener('input',()=>{$('desc-count').textContent=String($('business-description').value.length);});
   $('weekly-focus').addEventListener('input',()=>{$('focus-count').textContent=String($('weekly-focus').value.length);});
@@ -442,6 +713,7 @@
   $('calendar-grid').addEventListener('click',(event)=>{
     const cell = event.target.closest('[data-date]'); if (!cell) return;
     const iso = cell.dataset.date;
+    if (iso < todayIso()) return; // past dates are view-only — the dot still shows what ran that day
     if (draftDates.has(iso)) draftDates.delete(iso); else draftDates.add(iso);
     renderStories(); renderPlan(); renderCalendarMonth();
   });
@@ -453,12 +725,17 @@
   $('edit-ritmo').addEventListener('click',()=>$('ritmo-dialog').showModal());
   $('close-ritmo').addEventListener('click',()=>$('ritmo-dialog').close());
   $('close-ritmo-2').addEventListener('click',()=>$('ritmo-dialog').close());
+  $('ig-preview-close').addEventListener('click',()=>$('ig-preview-dialog').close());
+  $('ig-preview-prev').addEventListener('click',previewPrev);
+  $('ig-preview-next').addEventListener('click',previewNext);
   $('ritmo-chips').addEventListener('click',(event)=>{
     const chip = event.target.closest('[data-day]'); if (!chip) return;
     toggleRitmoDay(Number(chip.dataset.day));
   });
   $('qa-focus').addEventListener('click',()=>{$('content-panel').classList.remove('collapsed'); setFieldMode('description',true); $('business-description').scrollIntoView({behavior:'smooth',block:'center'}); $('business-description').focus();});
   $('stories').addEventListener('click',(event)=>{
+    const scheduleBtn=event.target.closest('[data-schedule-date]');
+    if (scheduleBtn) { scheduleDay(scheduleBtn.dataset.scheduleDate); return; }
     const addCard=event.target.closest('[data-add-date]');
     if (addCard) {
       pendingUploadDate=addCard.dataset.addDate;
@@ -471,19 +748,57 @@
     if (!card) return;
     const found=findStory(card.dataset.storyId); if(!found) return;
     if (action) {
-      if(action.dataset.action==='edit')openStory(found.story);
+      if(action.dataset.action==='preview')openPreview([found.story]);
+      if(action.dataset.action==='edit')openStory(found.story,found.group);
       if(action.dataset.action==='delete')deleteStory(found.group,found.story);
-      if(action.dataset.action==='move-left')moveStory(found.group,found.story,-1);
-      if(action.dataset.action==='move-right')moveStory(found.group,found.story,1);
       return;
     }
     toggleApproval(found.story);
   });
-  $('stories').addEventListener('change',(event)=>{
-    const timeInput=event.target.closest('[data-time-for]'); if (!timeInput) return;
-    updateDayTime(timeInput.dataset.timeFor, timeInput.value);
+  let draggedStoryId = null;
+  $('stories').addEventListener('dragstart',(event)=>{
+    const card=event.target.closest('.story[data-story-id]'); if(!card)return;
+    draggedStoryId=card.dataset.storyId;
+    event.dataTransfer.effectAllowed='move';
+    card.classList.add('dragging');
   });
-  $('plan-days').addEventListener('click',(event)=>{const action=event.target.closest('[data-action]'),card=event.target.closest('[data-story-id]');if(!action||!card)return;const found=findStory(card.dataset.storyId);if(!found)return;if(action.dataset.action==='edit')openStory(found.story);if(action.dataset.action==='delete')deleteStory(found.group,found.story);});
+  $('stories').addEventListener('dragend',(event)=>{
+    const card=event.target.closest('.story[data-story-id]'); if(card)card.classList.remove('dragging');
+    document.querySelectorAll('#stories .drag-over').forEach((el)=>el.classList.remove('drag-over'));
+    draggedStoryId=null;
+  });
+  $('stories').addEventListener('dragover',(event)=>{
+    const card=event.target.closest('.story[data-story-id]'); if(!card||!draggedStoryId)return;
+    event.preventDefault();
+    if (card.dataset.storyId!==draggedStoryId) card.classList.add('drag-over');
+  });
+  $('stories').addEventListener('dragleave',(event)=>{
+    const card=event.target.closest('.story[data-story-id]'); if(card)card.classList.remove('drag-over');
+  });
+  $('stories').addEventListener('drop',(event)=>{
+    const card=event.target.closest('.story[data-story-id]'); if(!card||!draggedStoryId)return;
+    event.preventDefault(); card.classList.remove('drag-over');
+    const targetId=card.dataset.storyId; if(targetId===draggedStoryId)return;
+    const found=findStory(draggedStoryId); if(found)reorderStory(found.group,draggedStoryId,targetId);
+  });
+  $('stories').addEventListener('change',(event)=>{
+    const timeInput=event.target.closest('[data-time-for]');
+    if (timeInput) { updateDayTime(timeInput.dataset.timeFor, timeInput.value); return; }
+    const descInput=event.target.closest('[data-desc-for]');
+    if (descInput) updateDayDescription(descInput.dataset.descFor, descInput.value.trim());
+  });
+  $('plan-days').addEventListener('click',(event)=>{
+    const deleteBtn = event.target.closest('[data-plan-delete]');
+    if (deleteBtn) { event.stopPropagation(); deletePlanDay(deleteBtn.dataset.planDelete); return; }
+    const chip = event.target.closest('[data-plan-date]'); if (!chip) return;
+    const entry = planItemsByDate().get(chip.dataset.planDate);
+    if (entry && entry.stories.length) openPreview([...entry.stories].sort((a,b) => a.order - b.order));
+  });
   $('save-story').addEventListener('click',saveStory); $('close-story').addEventListener('click',()=>$('story-dialog').close()); $('cancel-story-edit').addEventListener('click',()=>$('story-dialog').close());
+  $('generate-ai-text').addEventListener('click',generateStoryText);
+  $('story-font').addEventListener('change',saveStoryFont);
+  $('ig-preview-edit').addEventListener('click',editPreviewStory);
+  $('ig-preview-delete').addEventListener('click',deletePreviewStory);
+  $('toast-close').addEventListener('click',clearMessage);
   loadMeAndTeams().finally(loadClients);
 })();

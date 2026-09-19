@@ -282,6 +282,30 @@ def test_editar_historia_devuelve_url_de_cloudinary(mock_servicios):
     assert "re_edit_3" in url
 
 
+def test_editar_historia_usa_el_font_choice_pasado_por_parametro(mock_servicios, monkeypatch):
+    # Un override puntual por historia (el empleado elige otra tipografia
+    # solo para esta Story desde el editor) debe pisar la del cliente.
+    config = config_cuan(font_choice="dm_sans")
+    captured = {}
+    monkeypatch.setattr(content, "componer_historia",
+        lambda *a, **k: captured.update(k) or imagen_falsa())
+
+    content.editar_historia(config, imagen_falsa(), "Texto", num_historia=1, font_choice="poppins")
+
+    assert captured["font_choice"] == "poppins"
+
+
+def test_editar_historia_sin_override_usa_la_tipografia_del_cliente(mock_servicios, monkeypatch):
+    config = config_cuan(font_choice="dm_sans")
+    captured = {}
+    monkeypatch.setattr(content, "componer_historia",
+        lambda *a, **k: captured.update(k) or imagen_falsa())
+
+    content.editar_historia(config, imagen_falsa(), "Texto", num_historia=1)
+
+    assert captured["font_choice"] == "dm_sans"
+
+
 def test_generar_texto_de_prueba_devuelve_solo_texto(mock_servicios):
     config = config_cuan()
 
@@ -291,6 +315,71 @@ def test_generar_texto_de_prueba_devuelve_solo_texto(mock_servicios):
     assert len(historias) == 4
     # No sube nada a Cloudinary.
     assert content.cloudinary.uploader.upload.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# generar_texto_para_imagen (subida manual: una sola historia, imagen real)
+# ---------------------------------------------------------------------------
+
+def test_generar_texto_para_imagen_devuelve_un_solo_texto_limpio(mock_servicios):
+    mock_servicios.crear_para("Así se ve tu cocina en 3D antes de la obra 🎉")
+    config = config_cuan()
+
+    texto = content.generar_texto_para_imagen(config, imagen_falsa())
+
+    assert isinstance(texto, str)
+    assert texto == "Así se ve tu cocina en 3D antes de la obra"
+    # No sube nada a Cloudinary: solo genera texto.
+    assert content.cloudinary.uploader.upload.call_count == 0
+    assert mock_servicios.messages.create.call_count == 1
+
+
+def test_generar_texto_para_imagen_usa_pocos_tokens_para_una_sola_historia(mock_servicios):
+    mock_servicios.crear_para("Una historia corta.")
+    content.generar_texto_para_imagen(config_cuan(), imagen_falsa())
+
+    _, kwargs = mock_servicios.messages.create.call_args
+    assert kwargs["max_tokens"] == 60
+
+
+def test_generar_texto_para_imagen_sin_texto_levanta_claudegenerationerror(mock_servicios):
+    mock_servicios.crear_para("   ")
+
+    with pytest.raises(content.ClaudeGenerationError, match="no devolvió texto"):
+        content.generar_texto_para_imagen(config_cuan(), imagen_falsa())
+
+
+def test_generar_texto_para_imagen_descarta_todo_despues_del_primer_separador(mock_servicios):
+    # Si Claude ignora "una sola historia" y devuelve un hilo de 4 con |||
+    # (el formato del prompt semanal), nos quedamos solo con la primera.
+    mock_servicios.crear_para(
+        "Esa esquina vacía puede ser un rincón de lectura. ||| "
+        "Todo depende de cómo pienses el espacio. ||| "
+        "Nosotros lo vemos antes de construirlo. ||| "
+        "Escribí ESPACIO y te mostramos cómo."
+    )
+    texto = content.generar_texto_para_imagen(config_cuan(), imagen_falsa())
+    assert texto == "Esa esquina vacía puede ser un rincón de lectura."
+
+
+def test_generar_texto_para_imagen_descarta_lineas_extra(mock_servicios):
+    mock_servicios.crear_para("Primera línea.\nSegunda línea que no debería aparecer.")
+    texto = content.generar_texto_para_imagen(config_cuan(), imagen_falsa())
+    assert texto == "Primera línea."
+
+
+def test_generar_texto_para_imagen_corta_textos_demasiado_largos(mock_servicios):
+    mock_servicios.crear_para("palabra " * 40)
+    texto = content.generar_texto_para_imagen(config_cuan(), imagen_falsa())
+    assert len(texto) <= 91  # cap + "…"
+    assert texto.endswith("…")
+
+
+def test_generar_texto_para_imagen_envuelve_error_de_claude(mock_servicios):
+    mock_servicios.messages.create.side_effect = RuntimeError("boom de anthropic")
+
+    with pytest.raises(content.ClaudeGenerationError, match="boom de anthropic"):
+        content.generar_texto_para_imagen(config_cuan(), imagen_falsa())
 
 
 # ---------------------------------------------------------------------------
