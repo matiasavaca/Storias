@@ -71,15 +71,16 @@
   }
   async function loadHomeSummary() {
     $('home-teams').textContent = 'Cargando...'; $('home-idle').textContent = 'Cargando...';
-    ['stat-publicadas','stat-agendadas','stat-promedio','stat-aprobacion'].forEach((id) => { $(id).textContent = '–'; });
+    ['stat-edicion','stat-agendadas','stat-publicadas','stat-promedio','stat-aprobacion'].forEach((id) => { $(id).textContent = '–'; });
     try {
       const summary = await api('/portal/resumen');
-      $('stat-publicadas').textContent = summary.historias_publicadas;
+      $('stat-edicion').textContent = summary.historias_en_edicion;
       $('stat-agendadas').textContent = summary.historias_agendadas;
+      $('stat-publicadas').textContent = summary.historias_publicadas;
       $('stat-promedio').textContent = summary.promedio_por_cliente;
       $('stat-aprobacion').textContent = summary.aprobacion_pct === null ? '—' : `${summary.aprobacion_pct}%`;
       $('home-teams').innerHTML = summary.por_equipo.length
-        ? `<table class="team-table"><thead><tr><th>Equipo</th><th>Clientes</th><th>Agendadas</th><th>% aprobación</th></tr></thead><tbody>${summary.por_equipo.map((team) => `<tr><td>${escapeHtml(team.team_name)}</td><td>${team.clientes}</td><td>${team.historias_agendadas}</td><td>${team.aprobacion_pct === null ? '—' : team.aprobacion_pct + '%'}</td></tr>`).join('')}</tbody></table>`
+        ? `<table class="team-table"><thead><tr><th>Equipo</th><th>Clientes</th><th>En edición</th><th>Agendadas</th><th>% aprobación</th></tr></thead><tbody>${summary.por_equipo.map((team) => `<tr><td>${escapeHtml(team.team_name)}</td><td>${team.clientes}</td><td>${team.historias_en_edicion}</td><td>${team.historias_agendadas}</td><td>${team.aprobacion_pct === null ? '—' : team.aprobacion_pct + '%'}</td></tr>`).join('')}</tbody></table>`
         : '<div class="empty">Todavía no hay clientes.</div>';
       $('home-idle').innerHTML = summary.clientes_sin_actividad.length
         ? `<div class="idle-list">${summary.clientes_sin_actividad.map((c) => `<span class="idle-chip">${escapeHtml(c.name)}</span>`).join('')}</div>`

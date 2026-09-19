@@ -161,9 +161,12 @@ def list_clients(employee: EmployeeDep, solo_mios: bool = False):
 
 @router.get("/resumen")
 def get_summary(employee: EmployeeDep):
-    """Agency-wide snapshot for the Inicio tab. "historias_agendadas" reuses
-    the exact same definition as list_clients's stories_count (active,
-    non-cancelled, fecha_publicacion >= today) so these numbers always agree
+    """Agency-wide snapshot for the Inicio tab: a publish funnel — en edición
+    (not approved yet) → agendadas (approved, ready to go out) → publicadas —
+    plus workload and coverage stats. The upcoming-stories query (active,
+    non-cancelled, fecha_publicacion >= today) is the same definition
+    list_clients already uses for its per-client counter, split here by
+    aprobado into "en edición" vs "agendadas" so these numbers always agree
     with what an employee sees per-client — no separate metric to drift."""
     db = get_admin_client()
     clients = db.table("clients").select("id,name,team_id").eq(
@@ -171,8 +174,8 @@ def get_summary(employee: EmployeeDep):
     ).execute().data or []
     if not clients:
         return {
-            "historias_publicadas": 0, "historias_agendadas": 0, "clientes_count": 0,
-            "promedio_por_cliente": 0, "aprobacion_pct": None,
+            "historias_publicadas": 0, "historias_en_edicion": 0, "historias_agendadas": 0,
+            "clientes_count": 0, "promedio_por_cliente": 0, "aprobacion_pct": None,
             "clientes_sin_actividad": [], "por_equipo": [],
         }
 
@@ -189,27 +192,29 @@ def get_summary(employee: EmployeeDep):
     by_client: dict[str, list[bool]] = {}
     for row in upcoming:
         by_client.setdefault(row["client_id"], []).append(bool(row["aprobado"]))
-    total_agendadas = len(upcoming)
-    total_aprobadas = sum(1 for row in upcoming if row["aprobado"])
+    total_upcoming = len(upcoming)
+    total_agendadas = sum(1 for row in upcoming if row["aprobado"])
+    total_en_edicion = total_upcoming - total_agendadas
 
     teams = db.table("teams").select("id,name").eq("agency_id", employee.agency_id).execute().data or []
     team_names = {t["id"]: t["name"] for t in teams}
     by_team: dict[str | None, dict] = {}
     for c in clients:
-        bucket = by_team.setdefault(c.get("team_id"), {"clientes": 0, "agendadas": 0, "aprobadas": 0})
+        bucket = by_team.setdefault(c.get("team_id"), {"clientes": 0, "agendadas": 0, "upcoming": 0})
         bucket["clientes"] += 1
         flags = by_client.get(c["id"], [])
-        bucket["agendadas"] += len(flags)
-        bucket["aprobadas"] += sum(1 for f in flags if f)
+        bucket["upcoming"] += len(flags)
+        bucket["agendadas"] += sum(1 for f in flags if f)
 
     return {
         "historias_publicadas": len(published),
+        "historias_en_edicion": total_en_edicion,
         "historias_agendadas": total_agendadas,
         "clientes_count": len(clients),
-        "promedio_por_cliente": round(total_agendadas / len(clients), 1),
-        "aprobacion_pct": round(total_aprobadas / total_agendadas * 100, 1) if total_agendadas else None,
-        # A client with nothing scheduled ahead is the one that needs
-        # attention right now, regardless of how much it published before.
+        "promedio_por_cliente": round(total_upcoming / len(clients), 1),
+        "aprobacion_pct": round(total_agendadas / total_upcoming * 100, 1) if total_upcoming else None,
+        # A client with nothing upcoming (approved or not) is the one that
+        # needs attention right now, regardless of how much it published before.
         "clientes_sin_actividad": [
             {"id": c["id"], "name": c["name"]} for c in clients if not by_client.get(c["id"])
         ],
@@ -218,8 +223,9 @@ def get_summary(employee: EmployeeDep):
                 "team_id": team_id,
                 "team_name": team_names.get(team_id, "Sin equipo") if team_id else "Sin equipo",
                 "clientes": bucket["clientes"],
+                "historias_en_edicion": bucket["upcoming"] - bucket["agendadas"],
                 "historias_agendadas": bucket["agendadas"],
-                "aprobacion_pct": round(bucket["aprobadas"] / bucket["agendadas"] * 100, 1) if bucket["agendadas"] else None,
+                "aprobacion_pct": round(bucket["agendadas"] / bucket["upcoming"] * 100, 1) if bucket["upcoming"] else None,
             }
             for team_id, bucket in sorted(by_team.items(), key=lambda kv: team_names.get(kv[0], "") if kv[0] else "")
         ],

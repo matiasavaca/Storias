@@ -76,10 +76,11 @@
     /* ── Content-direction panel ── */
     .panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
     #home-view .panel{margin-bottom:16px}
-    .home-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+    .home-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px}
     .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:16px}
     .stat-value{font-size:24px;font-weight:800;letter-spacing:-.02em}
     .stat-label{font-size:11px;color:var(--muted);margin-top:4px}
+    @media(max-width:960px){.home-stats{grid-template-columns:repeat(3,1fr)}}
     @media(max-width:700px){.home-stats{grid-template-columns:repeat(2,1fr)}}
     .team-table{width:100%;border-collapse:collapse;font-size:12.5px}
     .team-table th{text-align:left;color:var(--muted);font-weight:650;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--border)}
@@ -290,8 +291,9 @@
       <div id="empty" class="empty">Seleccioná un cliente para gestionar su contenido.</div>
       <section id="home-view" class="hidden">
         <div class="home-stats">
-          <div class="stat-card"><div class="stat-value" id="stat-publicadas">–</div><div class="stat-label">Historias publicadas</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-edicion">–</div><div class="stat-label">En edición</div></div>
           <div class="stat-card"><div class="stat-value" id="stat-agendadas">–</div><div class="stat-label">Agendadas para subir</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-publicadas">–</div><div class="stat-label">Historias publicadas</div></div>
           <div class="stat-card"><div class="stat-value" id="stat-promedio">–</div><div class="stat-label">Promedio por cliente</div></div>
           <div class="stat-card"><div class="stat-value" id="stat-aprobacion">–</div><div class="stat-label">% de aprobación</div></div>
         </div>

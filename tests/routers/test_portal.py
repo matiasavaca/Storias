@@ -125,8 +125,8 @@ def test_summary_reports_zero_state_with_no_clients(monkeypatch, client):
     response = client.get("/portal/resumen")
     assert response.status_code == 200
     assert response.json() == {
-        "historias_publicadas": 0, "historias_agendadas": 0, "clientes_count": 0,
-        "promedio_por_cliente": 0, "aprobacion_pct": None,
+        "historias_publicadas": 0, "historias_en_edicion": 0, "historias_agendadas": 0,
+        "clientes_count": 0, "promedio_por_cliente": 0, "aprobacion_pct": None,
         "clientes_sin_actividad": [], "por_equipo": [],
     }
 
@@ -145,14 +145,15 @@ def test_summary_aggregates_published_upcoming_and_team_breakdown(monkeypatch, c
     assert response.status_code == 200
     body = response.json()
     assert body["historias_publicadas"] == 2
-    assert body["historias_agendadas"] == 3
+    assert body["historias_en_edicion"] == 1
+    assert body["historias_agendadas"] == 2
     assert body["clientes_count"] == 3
     assert body["promedio_por_cliente"] == 1.0
     assert body["aprobacion_pct"] == 66.7
     assert body["clientes_sin_actividad"] == [{"id": "c3", "name": "Cliente Tres"}]
     assert body["por_equipo"] == [
-        {"team_id": None, "team_name": "Sin equipo", "clientes": 1, "historias_agendadas": 0, "aprobacion_pct": None},
-        {"team_id": "t1", "team_name": "Equipo A", "clientes": 2, "historias_agendadas": 3, "aprobacion_pct": 66.7},
+        {"team_id": None, "team_name": "Sin equipo", "clientes": 1, "historias_en_edicion": 0, "historias_agendadas": 0, "aprobacion_pct": None},
+        {"team_id": "t1", "team_name": "Equipo A", "clientes": 2, "historias_en_edicion": 1, "historias_agendadas": 2, "aprobacion_pct": 66.7},
     ]
 
 
