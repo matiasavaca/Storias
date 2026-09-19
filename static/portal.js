@@ -67,6 +67,43 @@
     state.selectionVersion += 1; state.selectedClientId = null; state.client = null; state.groups = []; state.editingStory = null;
     $('client-view').classList.add('hidden'); $('empty').classList.remove('hidden'); $('empty').textContent = 'Seleccioná un cliente para gestionar su contenido.';
     $('header-client').classList.add('hidden'); $('header-default').classList.remove('hidden'); $('drive-link').classList.add('hidden');
+    $('home-view').classList.add('hidden'); $('nav-home').classList.remove('active'); $('nav-clients').classList.add('active');
+  }
+  async function loadHomeSummary() {
+    $('home-teams').textContent = 'Cargando...'; $('home-idle').textContent = 'Cargando...';
+    ['stat-publicadas','stat-agendadas','stat-promedio','stat-aprobacion'].forEach((id) => { $(id).textContent = '–'; });
+    try {
+      const summary = await api('/portal/resumen');
+      $('stat-publicadas').textContent = summary.historias_publicadas;
+      $('stat-agendadas').textContent = summary.historias_agendadas;
+      $('stat-promedio').textContent = summary.promedio_por_cliente;
+      $('stat-aprobacion').textContent = summary.aprobacion_pct === null ? '—' : `${summary.aprobacion_pct}%`;
+      $('home-teams').innerHTML = summary.por_equipo.length
+        ? `<table class="team-table"><thead><tr><th>Equipo</th><th>Clientes</th><th>Agendadas</th><th>% aprobación</th></tr></thead><tbody>${summary.por_equipo.map((team) => `<tr><td>${escapeHtml(team.team_name)}</td><td>${team.clientes}</td><td>${team.historias_agendadas}</td><td>${team.aprobacion_pct === null ? '—' : team.aprobacion_pct + '%'}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="empty">Todavía no hay clientes.</div>';
+      $('home-idle').innerHTML = summary.clientes_sin_actividad.length
+        ? `<div class="idle-list">${summary.clientes_sin_actividad.map((c) => `<span class="idle-chip">${escapeHtml(c.name)}</span>`).join('')}</div>`
+        : '<div class="empty">Todos los clientes tienen historias agendadas. 🎉</div>';
+    } catch (error) {
+      $('home-teams').textContent = ''; $('home-idle').textContent = '';
+      if (!['Acceso denegado','Sesión vencida'].includes(error.message)) showMessage(error.message, true);
+    }
+  }
+  function showHome() {
+    $('nav-home').classList.add('active'); $('nav-clients').classList.remove('active');
+    $('home-view').classList.remove('hidden'); $('empty').classList.add('hidden'); $('client-view').classList.add('hidden');
+    $('header-client').classList.add('hidden'); $('header-default').classList.remove('hidden'); $('drive-link').classList.add('hidden');
+    loadHomeSummary();
+  }
+  function showClients() {
+    $('nav-clients').classList.add('active'); $('nav-home').classList.remove('active');
+    $('home-view').classList.add('hidden');
+    if (state.client) {
+      $('client-view').classList.remove('hidden'); $('header-default').classList.add('hidden'); $('header-client').classList.remove('hidden');
+      if (driveUrl(state.client.drive_folder_id)) $('drive-link').classList.remove('hidden');
+    } else {
+      $('empty').classList.remove('hidden');
+    }
   }
 
   async function loadMeAndTeams() {
@@ -145,6 +182,7 @@
     state.selectedClientId = clientId; state.client = null; state.groups = []; state.editingStory = null; setControlsDisabled(true);
     if ($('story-dialog').open) $('story-dialog').close();
     clearMessage(); $('empty').classList.add('hidden'); $('client-view').classList.remove('hidden');
+    $('home-view').classList.add('hidden'); $('nav-home').classList.remove('active'); $('nav-clients').classList.add('active');
     $('header-default').classList.add('hidden'); $('header-client').classList.remove('hidden');
     $('client-name').textContent = 'Cargando...'; $('stories').textContent = 'Cargando...'; $('week-badge').classList.add('hidden');
     $('activity-list').innerHTML = ''; $('activity-summary').innerHTML = ''; $('header-tags').innerHTML = ''; $('drive-link').classList.add('hidden');
@@ -690,6 +728,8 @@
     if (previewIndex >= previewStories.length) previewIndex = previewStories.length - 1;
     showPreviewStory();
   }
+  $('nav-home').addEventListener('click',showHome);
+  $('nav-clients').addEventListener('click',showClients);
   $('client-list').addEventListener('click',(event)=>{const item=event.target.closest('[data-client-id]');if(item)selectClient(item.dataset.clientId);});
   $('only-mine').addEventListener('change',loadClients);
   $('save-description').addEventListener('click',()=>saveClientField('business_description','save-description'));

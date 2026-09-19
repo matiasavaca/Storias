@@ -75,6 +75,18 @@
 
     /* ── Content-direction panel ── */
     .panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
+    #home-view .panel{margin-bottom:16px}
+    .home-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);padding:16px}
+    .stat-value{font-size:24px;font-weight:800;letter-spacing:-.02em}
+    .stat-label{font-size:11px;color:var(--muted);margin-top:4px}
+    @media(max-width:700px){.home-stats{grid-template-columns:repeat(2,1fr)}}
+    .team-table{width:100%;border-collapse:collapse;font-size:12.5px}
+    .team-table th{text-align:left;color:var(--muted);font-weight:650;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--border)}
+    .team-table td{padding:8px}
+    .team-table tr:not(:last-child) td{border-bottom:1px solid var(--border)}
+    .idle-list{display:flex;flex-wrap:wrap;gap:8px}
+    .idle-chip{font-size:12px;padding:5px 10px;border-radius:99px;background:var(--danger-soft);color:var(--danger)}
     .panel-head{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer}
     .panel-head h2{font-size:13px;font-weight:650}
     .panel-head .chev{color:var(--muted);transition:transform .15s}
@@ -244,8 +256,8 @@
   <aside class="sidebar">
     <div class="logo-row"><div class="logo"><span class="logo-icon"><span></span><span></span><span></span><span></span></span>Storias</div><div class="tagline">IA para historias con propósito</div></div>
     <nav class="main-nav">
-      <span class="nav-item disabled" title="Próximamente"><span class="icon">🏠</span>Inicio</span>
-      <span class="nav-item active"><span class="icon">👥</span>Mis clientes</span>
+      <span class="nav-item" id="nav-home"><span class="icon">🏠</span>Inicio</span>
+      <span class="nav-item active" id="nav-clients"><span class="icon">👥</span>Mis clientes</span>
       <span class="nav-item disabled" title="Próximamente"><span class="icon">⚙️</span>Ajustes</span>
     </nav>
     <div class="nav-divider"></div>
@@ -276,6 +288,22 @@
     <main class="content">
       <div id="toast" class="toast hidden" role="status"><span id="toast-text"></span><button id="toast-close" class="toast-close" aria-label="Cerrar">×</button></div>
       <div id="empty" class="empty">Seleccioná un cliente para gestionar su contenido.</div>
+      <section id="home-view" class="hidden">
+        <div class="home-stats">
+          <div class="stat-card"><div class="stat-value" id="stat-publicadas">–</div><div class="stat-label">Historias publicadas</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-agendadas">–</div><div class="stat-label">Agendadas para subir</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-promedio">–</div><div class="stat-label">Promedio por cliente</div></div>
+          <div class="stat-card"><div class="stat-value" id="stat-aprobacion">–</div><div class="stat-label">% de aprobación</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Por equipo</h2></div>
+          <div class="panel-body"><div id="home-teams"></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Clientes sin historias agendadas</h2></div>
+          <div class="panel-body"><div id="home-idle"></div></div>
+        </div>
+      </section>
       <section id="client-view" class="hidden">
         <div class="panel" id="content-panel">
           <div class="panel-head" id="content-panel-toggle"><h2>Dirección de contenido</h2><span class="chev">▾</span></div>

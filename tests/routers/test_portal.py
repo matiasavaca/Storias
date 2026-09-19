@@ -119,6 +119,43 @@ def test_create_team_rejects_duplicate_name(monkeypatch, client):
     assert response.status_code == 409
 
 
+def test_summary_reports_zero_state_with_no_clients(monkeypatch, client):
+    db = DB([[]])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.get("/portal/resumen")
+    assert response.status_code == 200
+    assert response.json() == {
+        "historias_publicadas": 0, "historias_agendadas": 0, "clientes_count": 0,
+        "promedio_por_cliente": 0, "aprobacion_pct": None,
+        "clientes_sin_actividad": [], "por_equipo": [],
+    }
+
+
+def test_summary_aggregates_published_upcoming_and_team_breakdown(monkeypatch, client):
+    clients = [{"id": "c1", "name": "Cliente Uno", "team_id": "t1"},
+               {"id": "c2", "name": "Cliente Dos", "team_id": "t1"},
+               {"id": "c3", "name": "Cliente Tres", "team_id": None}]
+    published = [{"id": "s1"}, {"id": "s2"}]
+    upcoming = [{"client_id": "c1", "aprobado": True}, {"client_id": "c1", "aprobado": False},
+                {"client_id": "c2", "aprobado": True}]
+    teams = [{"id": "t1", "name": "Equipo A"}]
+    db = DB([clients, published, upcoming, teams])
+    monkeypatch.setattr("app.routers.portal.get_admin_client", lambda: db)
+    response = client.get("/portal/resumen")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["historias_publicadas"] == 2
+    assert body["historias_agendadas"] == 3
+    assert body["clientes_count"] == 3
+    assert body["promedio_por_cliente"] == 1.0
+    assert body["aprobacion_pct"] == 66.7
+    assert body["clientes_sin_actividad"] == [{"id": "c3", "name": "Cliente Tres"}]
+    assert body["por_equipo"] == [
+        {"team_id": None, "team_name": "Sin equipo", "clientes": 1, "historias_agendadas": 0, "aprobacion_pct": None},
+        {"team_id": "t1", "team_name": "Equipo A", "clientes": 2, "historias_agendadas": 3, "aprobacion_pct": 66.7},
+    ]
+
+
 def test_patch_client_ritmo_saves_four_distinct_days(monkeypatch, client):
     saved_days = [{"day": 1, "time": "08:00"}, {"day": 3, "time": "12:00"},
                   {"day": 5, "time": "18:00"}, {"day": 6, "time": "20:00"}]
