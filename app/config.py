@@ -5,7 +5,7 @@ Todas las variables sensibles vienen del .env — NUNCA hardcodeadas.
 from __future__ import annotations
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -30,10 +30,21 @@ class Settings(BaseSettings):
     # ── Google OAuth ───────────────────────────────────────────────────────────
     google_client_id: str
     google_client_secret: str
+    # En desarrollo, este host debe coincidir con el usado para entrar al portal;
+    # /auth/google redirige al host canónico para conservar la cookie de sesión.
     google_redirect_uri: str = "http://localhost:5001/auth/callback"
 
     # ── Claude API ─────────────────────────────────────────────────────────────
     anthropic_api_key: str
+
+    # ── Cloudinary ─────────────────────────────────────────────────────────────
+    # The engine (app/engine/content.py) reads these itself via os.getenv, per
+    # its own contract of not depending on this settings module. This copy is
+    # for portal-side code (app/services/uploads.py) that isn't part of the
+    # engine and should go through Settings like everything else here.
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
 
     # ── Meta / Instagram ───────────────────────────────────────────────────────
     # Las credenciales POR CLIENTE se guardan cifradas en Supabase,
@@ -49,6 +60,9 @@ class Settings(BaseSettings):
 
     # ── Redis / Celery ─────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
+    publication_hour: int = Field(default=9, ge=0, le=23)
+    publication_minute: int = Field(default=0, ge=0, le=59)
+    google_service_account_file: str = ""
 
     # ── Tokens ─────────────────────────────────────────────────────────────────
     approval_token_ttl_hours: int = 48   # cuánto dura el link de aprobación

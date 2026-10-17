@@ -1,0 +1,6 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "celery -A app.services.scheduler.celery_app worker --loglevel=info --concurrency=2"
+restartPolicyType = "on_failure"

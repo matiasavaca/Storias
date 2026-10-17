@@ -22,3 +22,6 @@ Thumbs.db
 # Logs
 *.log
 celerybeat-schedule
+
+#clave service google
+service_account.json

@@ -1,9 +1,12 @@
 # ── Web framework ──────────────────────────────────────────
 fastapi>=0.115.5
 uvicorn[standard]>=0.32.1
+python-multipart>=0.0.17  # required for FastAPI file uploads (UploadFile/Form)
 
 # ── Supabase ───────────────────────────────────────────────
 supabase>=2.9.1
+google-api-python-client>=2.154.0
+google-auth>=2.36.0
 
 # ── Auth & seguridad ───────────────────────────────────────
 python-jose[cryptography]>=3.3.0   # JWT
@@ -31,3 +34,8 @@ redis>=5.2.0
 
 # ── Validación ─────────────────────────────────────────────
 pydantic[email]>=2.9.2
+
+# ── Motor de contenido ────────────────────────────────────
+anthropic>=0.40.0
+cloudinary>=1.41.0
+Pillow>=11.0.0
